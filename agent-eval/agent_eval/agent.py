@@ -18,6 +18,16 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Protocol
 
+from solari_sandbox import ActionError
+
+# `ActionError` means the sandbox ran the RPC and it came back not-ok: a
+# missing binary, an unwritable path. That is a fact about the machine, which
+# is exactly what an agent is supposed to observe and recover from — "run,
+# read the error, fix, re-run" is half the suite. Connection, timeout and
+# gateway errors are different: those are the harness losing the machine, and
+# they still propagate.
+EXEC_NOT_FOUND = 127
+
 # How much of a command's output the agent is shown, and how much is kept in
 # the trajectory. Enough to diagnose a failure, not enough to bury it.
 OUTPUT_LIMIT = 4000
@@ -259,9 +269,19 @@ class ScriptedAgent:
 async def execute(sandbox: Any, action: Action, *, workdir: str = DEFAULT_WORKDIR) -> ActionResult:
     """Perform one action in the sandbox and capture what came back."""
     if action.kind == "run":
-        res = await sandbox.commands.run(
-            action.cmd, args=list(action.args), cwd=action.cwd or workdir
-        )
+        try:
+            res = await sandbox.commands.run(
+                action.cmd, args=list(action.args), cwd=action.cwd or workdir
+            )
+        except ActionError as exc:
+            # A mistyped program name is a recoverable mistake, not the end of
+            # the run. Hand it back the way a shell would.
+            return ActionResult(
+                ok=False,
+                exit_code=EXEC_NOT_FOUND,
+                stderr=str(exc),
+                note=f"could not run {action.cmd!r}",
+            )
         return ActionResult(
             ok=res.exitCode == 0,
             exit_code=res.exitCode,
@@ -270,7 +290,10 @@ async def execute(sandbox: Any, action: Action, *, workdir: str = DEFAULT_WORKDI
         )
 
     if action.kind == "write":
-        await sandbox.files.write(action.path, action.content)
+        try:
+            await sandbox.files.write(action.path, action.content)
+        except ActionError as exc:
+            return ActionResult(ok=False, note=f"could not write {action.path}: {exc}")
         return ActionResult(ok=True, note=f"wrote {len(action.content)} chars to {action.path}")
 
     if action.kind == "read":

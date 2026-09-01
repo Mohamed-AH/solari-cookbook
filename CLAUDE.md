@@ -362,6 +362,16 @@ the checks also failed**; if the end state is correct anyway the pass stands,
 because the end state is the measurement. Both agents raise it for transient
 failures, and the Gemini one first honours the retry delay the API returns.
 
+**The second bug: a mistyped command killed the run.** The model typed
+`python33`; the sandbox raised `ActionError` and the harness ended the attempt
+on step 2 of 8. But `ActionError` means the RPC ran and came back not-ok — a
+missing binary, an unwritable path — which is a fact about the machine, i.e.
+exactly what an agent is meant to observe and recover from. "Run, read the
+error, fix, re-run" is half the suite. `execute()` now hands those back as a
+failed `ActionResult` with exit code 127, the way a shell would. Connection,
+timeout and gateway errors still propagate: those are the harness losing the
+machine, not an observation.
+
 Other observations from that run, worth keeping:
 
 - `gemini-flash-lite-latest` resolves to `gemini-3.5-flash-lite`.
@@ -370,6 +380,9 @@ Other observations from that run, worth keeping:
   its job.
 - A PASS can legitimately carry an `agent_error`: `secret_leak_guard` finished
   the commit and then hit the limit on a later call.
+- `log_cleanup_precision` failed honestly — six steps, nothing deleted,
+  `max_steps`. A real capability gap, not an infrastructure artifact, and the
+  kind of result the suite exists to produce.
 
 ## Next
 
