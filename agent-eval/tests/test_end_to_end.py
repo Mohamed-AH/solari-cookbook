@@ -14,6 +14,7 @@ key — see local_sandbox.py for what that does and does not prove.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import sys
 import tempfile
 import unittest
@@ -27,6 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from agent_eval.agent import run_agent_loop  # noqa: E402
 from agent_eval.assertions import Checker  # noqa: E402
 from agent_eval.task import discover  # noqa: E402
+from capabilities import unsupported_reason  # noqa: E402
 from local_sandbox import LocalSandbox  # noqa: E402
 
 TASKS = discover(ROOT / "tasks")
@@ -69,7 +71,8 @@ def _make_pass_test(task):
 
     test.__name__ = f"test_{task.id}_passes"
     test.__doc__ = f"{task.id} passes under its correct agent"
-    return test
+    reason = unsupported_reason(task)
+    return unittest.skip(reason)(test) if reason else test
 
 
 def _make_fail_test(task):
@@ -83,7 +86,10 @@ def _make_fail_test(task):
 
     test.__name__ = f"test_{task.id}_catches_sabotage"
     test.__doc__ = f"{task.id} fails under its sabotage agent"
-    return test
+    # Skipped rather than trusted: a task whose tools are missing fails for
+    # the wrong reason, which would look like the saboteur being caught.
+    reason = unsupported_reason(task)
+    return unittest.skip(reason)(test) if reason else test
 
 
 for _task in TASKS:
@@ -124,6 +130,9 @@ class TestTrajectory(unittest.TestCase):
         by_id = {t.id: t for t in TASKS}
         for task_id in multi:
             with self.subTest(task=task_id):
+                skip = unsupported_reason(by_id[task_id])
+                if skip:
+                    self.skipTest(skip)
                 _, _, agent_run = attempt(by_id[task_id], "correct")
                 self.assertGreaterEqual(
                     len(agent_run.steps),
@@ -188,6 +197,37 @@ class TestFixtureNeverReachesThePrompt(unittest.TestCase):
                 return lines
 
         return asyncio.run(build())
+
+
+class TestDoubleFidelity(unittest.TestCase):
+    """The double must not alter bytes the harness wrote.
+
+    Regression: writing fixtures as text translated "\n" to os.linesep on
+    Windows, so every fixture landed as CRLF and its sha256 no longer matched
+    what the task computed — four tasks failed a "this file is unmodified"
+    check against files nothing had modified.
+    """
+
+    def test_written_bytes_survive_a_round_trip_unchanged(self):
+        content = "line one\nline two\nline three\n"
+
+        async def go():
+            with tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                sandbox = LocalSandbox(root)
+                await sandbox.files.write("/workspace/probe.txt", content)
+                on_disk = (root / "workspace" / "probe.txt").read_bytes()
+                back = await sandbox.files.read_text("/workspace/probe.txt")
+                return on_disk, back
+
+        on_disk, back = asyncio.run(go())
+        self.assertEqual(on_disk, content.encode("utf-8"))
+        self.assertNotIn(b"\r\n", on_disk, "newlines were translated on write")
+        self.assertEqual(back, content)
+        self.assertEqual(
+            hashlib.sha256(on_disk).hexdigest(),
+            hashlib.sha256(content.encode("utf-8")).hexdigest(),
+        )
 
 
 class TestMaxSteps(unittest.TestCase):

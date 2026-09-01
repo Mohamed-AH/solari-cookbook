@@ -116,6 +116,24 @@ class CheckResult:
         }
 
 
+def _parse_sha256(stdout: str) -> str | None:
+    """Pull the digest out of `sha256sum` output, or None if it is not there.
+
+    coreutils escapes the whole line with a leading backslash when the
+    filename contains a backslash or a newline, so the first token can arrive
+    as `\\<digest>`. Returning None rather than a mangled token matters: a
+    hash comparison that silently compares garbage reports a file as modified
+    when nothing touched it.
+    """
+    tokens = stdout.split()
+    if not tokens:
+        return None
+    digest = tokens[0].lstrip("\\").lower()
+    if len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):
+        return None
+    return digest
+
+
 def _truncate(text: str, limit: int = 2000) -> str:
     if len(text) <= limit:
         return text
@@ -259,15 +277,18 @@ class Checker:
         touch" is decided: an input fixture, or a test file it must leave alone.
         """
         res = await self._exec("sha256sum", [path])
-        parts = res.stdout.split()
-        actual = parts[0] if parts else ""
-        ok = res.exitCode == 0 and actual == expected_hex
+        actual = _parse_sha256(res.stdout)
+        ok = res.exitCode == 0 and actual == expected_hex.lower()
         if res.exitCode != 0:
             detail = f"could not hash file (exit {res.exitCode})"
+        elif actual is None:
+            # Never compare against a token we could not parse: that would
+            # report "modified" for a file nobody touched.
+            detail = f"could not parse sha256sum output: {res.stdout.strip()!r}"
         elif ok:
             detail = "unmodified"
         else:
-            detail = f"modified — wanted sha256 {expected_hex}, got {actual or '<none>'}"
+            detail = f"modified — wanted sha256 {expected_hex}, got {actual}"
         return self._record(
             CheckResult(
                 name=name or f"{path} is unmodified",
