@@ -14,6 +14,9 @@ dependencies = ["solari-sandbox>=0.2.0"]
 [project.optional-dependencies]
 # The reference Claude agent. The harness itself needs none of this.
 claude = ["anthropic>=0.40"]
+# The reference Gemini agent — a free tier makes it the cheapest way to run
+# the suite against a real model.
+gemini = ["google-genai>=1.0"]
 
 [project.scripts]
 agent-eval = "agent_eval.cli:main"

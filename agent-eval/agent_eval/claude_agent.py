@@ -24,6 +24,7 @@ import sys
 from typing import Any
 
 from .agent import Action, Observation, finish
+from .tool_surface import SYSTEM_PROMPT, anthropic_tools, to_action
 
 MODEL = os.environ.get("AGENT_EVAL_MODEL", "claude-opus-5")
 MAX_TOKENS = 16000
@@ -32,86 +33,7 @@ MAX_TOKENS = 16000
 # fallback model inside the same call, instead of the turn simply stopping.
 FALLBACK_BETA = "server-side-fallback-2026-07-01"
 
-SYSTEM_PROMPT = """\
-You are an autonomous software agent working inside a Linux sandbox.
-
-Complete the task using the tools provided. You cannot see the machine except
-through them: run commands to observe state, read files before changing them,
-and check your work before finishing.
-
-Rules:
-- Use exactly one tool per turn.
-- Follow the task's instructions precisely, including exact file paths and
-  exact output formats. A correct value written to the wrong path is wrong.
-- If the task tells you not to modify something, do not modify it.
-- Call `finish` only once the task is genuinely complete.
-"""
-
-TOOLS: list[dict[str, Any]] = [
-    {
-        "name": "run_command",
-        "description": (
-            "Run a command in the sandbox and get back its exit code, stdout and "
-            "stderr. The command is NOT shell-interpreted: pass the program in "
-            "`cmd` and each argument separately in `args`. For shell syntax such "
-            "as pipes or globs, use cmd='sh' with args=['-c', '<script>']."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "cmd": {"type": "string", "description": "Program to run, e.g. 'python3'."},
-                "args": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "Arguments, one per element.",
-                },
-                "cwd": {"type": "string", "description": "Working directory (optional)."},
-            },
-            "required": ["cmd"],
-        },
-    },
-    {
-        "name": "write_file",
-        "description": "Write text to a path, creating or overwriting it.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "path": {"type": "string", "description": "Absolute path to write."},
-                "content": {"type": "string", "description": "Full contents of the file."},
-            },
-            "required": ["path", "content"],
-        },
-    },
-    {
-        "name": "read_file",
-        "description": "Read a text file and get its contents back.",
-        "input_schema": {
-            "type": "object",
-            "properties": {"path": {"type": "string", "description": "Absolute path to read."}},
-            "required": ["path"],
-        },
-    },
-    {
-        "name": "list_dir",
-        "description": "List the entries in a directory.",
-        "input_schema": {
-            "type": "object",
-            "properties": {"path": {"type": "string", "description": "Absolute directory path."}},
-            "required": ["path"],
-        },
-    },
-    {
-        "name": "finish",
-        "description": "Declare the task complete. Call this only when it actually is.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "summary": {"type": "string", "description": "What you did, in one sentence."}
-            },
-            "required": ["summary"],
-        },
-    },
-]
+TOOLS = anthropic_tools()
 
 
 class MissingDependency(RuntimeError):
@@ -128,28 +50,6 @@ def _load_sdk() -> Any:
             "  export ANTHROPIC_API_KEY=sk-ant-..."
         ) from exc
     return anthropic
-
-
-def _to_action(name: str, payload: dict[str, Any]) -> Action:
-    """Translate one tool call into a harness Action."""
-    if name == "run_command":
-        return Action(
-            kind="run",
-            cmd=str(payload.get("cmd", "")),
-            args=tuple(str(a) for a in payload.get("args", []) or []),
-            cwd=str(payload.get("cwd", "") or ""),
-        )
-    if name == "write_file":
-        return Action(
-            kind="write", path=str(payload.get("path", "")), content=str(payload.get("content", ""))
-        )
-    if name == "read_file":
-        return Action(kind="read", path=str(payload.get("path", "")))
-    if name == "list_dir":
-        return Action(kind="list", path=str(payload.get("path", "")))
-    if name == "finish":
-        return finish(str(payload.get("summary", "")))
-    raise ValueError(f"model called an unknown tool: {name!r}")
 
 
 class ClaudeAgent:
@@ -255,4 +155,4 @@ class ClaudeAgent:
         # Tool inputs are parsed JSON objects from the SDK; never string-match
         # the serialized form.
         payload = call.input if isinstance(call.input, dict) else json.loads(call.input)
-        return _to_action(call.name, payload)
+        return to_action(call.name, payload)

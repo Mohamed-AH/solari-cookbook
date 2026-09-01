@@ -198,6 +198,8 @@ solari-cookbook/                 fork root (Mohamed-AH/solari-cookbook)
     │   ├── assertions.py        Checker; every check is exit code or stdout
     │   ├── builtins.py          agent resolution, incl. pkg.mod:MyAgent
     │   ├── claude_agent.py      reference LLM agent (optional extra)
+    │   ├── gemini_agent.py      second reference LLM agent (free tier)
+    │   ├── tool_surface.py      the tool surface both providers share
     │   ├── concurrency.py       AdaptiveLimiter
     │   ├── config.py, sandbox.py, task.py, runner.py, report.py, cli.py
     ├── tasks/                   six tasks, one file each
@@ -344,8 +346,20 @@ loaded tasks.
 
 Nothing blocking. Remaining polish, in rough priority order:
 
-1. Run the suite with `--agent claude` — the reference LLM agent has never
-   touched the live API, only stubbed tests. Needs `ANTHROPIC_API_KEY`.
+1. Run the suite with `--agent gemini` (free tier, `GEMINI_API_KEY`) or
+   `--agent claude` (`ANTHROPIC_API_KEY`). Neither reference LLM agent has
+   touched a live API yet — both are covered only by stubbed tests. Gemini is
+   the cheaper first move.
+
+   Both build their tool definitions from `agent_eval/tool_surface.py`; adding
+   the second provider required no change to the action set, which is the
+   evidence that the Agent interface is not Claude-shaped. `google-genai`
+   verified at 2.21.0: `genai.Client(api_key=...)`,
+   `client.aio.models.generate_content(model=, contents=, config=)`,
+   `types.FunctionDeclaration(parameters=<plain lowercase JSON schema>)` (the
+   SDK coerces it), `response.function_calls`, and
+   `AutomaticFunctionCallingConfig(disable=True)` so the SDK does not execute
+   tools behind the harness's back.
 2. Enable Actions on the fork, add `SOLARI_API_KEY` as a repository secret,
    and fire `agent-eval (live)` once so there is a green run to link to.
 3. Record the demo and post, tagging @harrychow_ and @getsolari.
