@@ -5,10 +5,10 @@ Execution-based regression testing for LLM agents, on Solari sandboxes.
 > Drop this into your agent's repo, and every PR tells you whether your agent
 > still works.
 
-**Status: phase 1 — the agent loop.** Six tasks, a bounded observation ->
-action -> result loop, and a pluggable agent interface. The CLI flags, the
-GitHub Action and the snapshot work land in later phases; this README grows
-with them.
+**Status: phase 2 — usable by someone else.** Six tasks, a bounded
+observation -> action -> result loop, a pluggable agent interface, a parallel
+runner, and a GitHub Action you can drop into your own agent's repo. The
+snapshot work lands next; this README grows with it.
 
 ## Why
 
@@ -64,7 +64,15 @@ step is recorded by the harness from the sandbox's own responses, so an agent
 that misreports what it did cannot fabricate the exit codes in the record.
 
 `agent_eval.claude_agent.ClaudeAgent` is a reference implementation of that
-interface in about 80 lines. Replace it with yours.
+interface in about 80 lines. Replace it with yours — you do not have to edit
+any task to do it:
+
+```bash
+agent-eval --agent my_package.my_module:MyAgent
+```
+
+Anything callable that returns an object with a `next_action` method works: a
+class, or a factory function.
 
 ## The suite
 

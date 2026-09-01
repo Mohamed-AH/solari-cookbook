@@ -1,0 +1,134 @@
+name: agent-eval
+description: >-
+  Run an execution-based agent evaluation suite in real Solari sandboxes and
+  fail the build on a regression.
+branding:
+  icon: activity
+  color: green
+
+inputs:
+  solari-api-key:
+    description: >-
+      Solari API key. Pass it from `secrets`, never from `vars` — repository
+      variables are plaintext and unmasked in logs.
+    required: true
+  anthropic-api-key:
+    description: Anthropic API key, if your agent needs one. Pass from `secrets`.
+    required: false
+    default: ""
+  agent:
+    description: >-
+      Which agent to run: a name your task defines, the built-in `claude`, or
+      an import path to your own — `my_package.my_module:MyAgent`.
+    required: false
+    default: claude
+  tasks-dir:
+    description: Directory of task modules, relative to the repository root.
+    required: false
+    default: tasks
+  tasks:
+    description: Comma-separated task ids to run. Empty runs every task.
+    required: false
+    default: ""
+  parallel:
+    description: >-
+      How many tasks to run at once, each in its own sandbox. Bounded by a
+      semaphore; raise it until you meet your account's concurrency cap.
+    required: false
+    default: "4"
+  expect:
+    description: >-
+      Expected outcome for every task — `pass` normally. `fail` is for testing
+      the suite itself: it succeeds only when every task fails.
+    required: false
+    default: pass
+  output:
+    description: Path for the JSON report.
+    required: false
+    default: agent-eval-results.json
+  python-version:
+    description: Python version to run the harness on.
+    required: false
+    default: "3.11"
+  upload-artifact:
+    description: Upload the JSON report as a build artifact.
+    required: false
+    default: "true"
+
+outputs:
+  passed:
+    description: Number of tasks that passed.
+    value: ${{ steps.run.outputs.passed }}
+  failed:
+    description: Number of tasks that failed.
+    value: ${{ steps.run.outputs.failed }}
+  errored:
+    description: Number of tasks where the harness itself failed.
+    value: ${{ steps.run.outputs.errored }}
+  pass-rate:
+    description: Fraction of tasks that passed, 0 to 1.
+    value: ${{ steps.run.outputs.pass-rate }}
+  report:
+    description: Path to the JSON report.
+    value: ${{ steps.run.outputs.report }}
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ inputs.python-version }}
+
+    - name: Install agent-eval
+      shell: bash
+      run: python -m pip install --quiet "${{ github.action_path }}[claude]"
+
+    - name: Run the suite
+      id: run
+      shell: bash
+      env:
+        SOLARI_API_KEY: ${{ inputs.solari-api-key }}
+        ANTHROPIC_API_KEY: ${{ inputs.anthropic-api-key }}
+        # Read by the summary step below, so no workflow expression is
+        # interpolated into Python source.
+        REPORT_PATH: ${{ inputs.output }}
+      run: |
+        set -o pipefail
+        status=0
+        agent-eval \
+          --agent "${{ inputs.agent }}" \
+          --tasks-dir "${{ inputs.tasks-dir }}" \
+          --tasks "${{ inputs.tasks }}" \
+          --parallel "${{ inputs.parallel }}" \
+          --expect "${{ inputs.expect }}" \
+          --output "$REPORT_PATH" \
+          --markdown "$GITHUB_STEP_SUMMARY" || status=$?
+
+        # Publish the numbers even on a red run — that is when they get read.
+        python - <<'PYEOF' >> "$GITHUB_OUTPUT"
+        import json
+        import os
+
+        path = os.environ["REPORT_PATH"]
+        try:
+            with open(path, encoding="utf-8") as fh:
+                summary = json.load(fh)["summary"]
+        except (OSError, ValueError, KeyError):
+            summary = {"passed": 0, "failed": 0, "errored": 0, "pass_rate": 0}
+        print("passed=%s" % summary["passed"])
+        print("failed=%s" % summary["failed"])
+        print("errored=%s" % summary["errored"])
+        print("pass-rate=%s" % summary["pass_rate"])
+        print("report=%s" % path)
+        PYEOF
+
+        exit $status
+
+    - name: Upload the report
+      if: ${{ always() && inputs.upload-artifact == 'true' }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: agent-eval-results
+        path: ${{ inputs.output }}
+        if-no-files-found: warn

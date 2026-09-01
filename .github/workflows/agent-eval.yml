@@ -1,0 +1,62 @@
+# The real suite, in real Solari sandboxes.
+#
+# workflow_dispatch only, on purpose. This job spends sandbox credits and
+# reads a secret, and `pull_request` runs on code from the person opening the
+# PR — including from a fork. Wiring a credit-spending, secret-reading job to
+# an untrusted trigger is how an evaluation suite becomes someone else's
+# compute budget.
+#
+# In your own repo, running this on `push` to your default branch is usually
+# the right trade: your agent's regressions get caught on merge, and only code
+# you control can trigger it.
+name: agent-eval (live)
+
+on:
+  workflow_dispatch:
+    inputs:
+      agent:
+        description: "Agent to run: correct, sabotage, claude, or my_pkg.mod:MyAgent"
+        type: string
+        default: correct
+      expect:
+        description: "Expected outcome for every task (use 'fail' with the sabotage agent)"
+        type: choice
+        options: [pass, fail]
+        default: pass
+      tasks:
+        description: "Comma-separated task ids. Empty runs the whole suite."
+        type: string
+        default: ""
+      parallel:
+        description: "How many sandboxes at once"
+        type: string
+        default: "4"
+
+jobs:
+  suite:
+    name: ${{ inputs.agent }} (expect ${{ inputs.expect }})
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run the suite
+        id: eval
+        uses: ./agent-eval
+        with:
+          # Secrets, never vars: repository variables are plaintext and
+          # unmasked in logs.
+          solari-api-key: ${{ secrets.SOLARI_API_KEY }}
+          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+          agent: ${{ inputs.agent }}
+          expect: ${{ inputs.expect }}
+          tasks: ${{ inputs.tasks }}
+          parallel: ${{ inputs.parallel }}
+          tasks-dir: agent-eval/tasks
+
+      - name: Numbers
+        if: always()
+        run: |
+          echo "passed:    ${{ steps.eval.outputs.passed }}"
+          echo "failed:    ${{ steps.eval.outputs.failed }}"
+          echo "errored:   ${{ steps.eval.outputs.errored }}"
+          echo "pass rate: ${{ steps.eval.outputs.pass-rate }}"
