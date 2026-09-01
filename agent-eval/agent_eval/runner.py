@@ -143,6 +143,7 @@ async def run_suite(
     agent_name: str,
     *,
     parallel: int = 1,
+    repeat: int = 1,
     prepared: PreparedEnvironment | None = None,
 ) -> RunReport:
     """Run every task, at most `parallel` sandboxes at a time.
@@ -158,14 +159,22 @@ async def run_suite(
     """
     if parallel < 1:
         raise ValueError(f"parallel must be at least 1, got {parallel}")
+    if repeat < 1:
+        raise ValueError(f"repeat must be at least 1, got {repeat}")
 
-    report = RunReport(started_at=now_iso(), agent=agent_name, parallel=parallel)
+    # Agents are non-deterministic, so one attempt per task measures one roll
+    # of the dice. Repeating turns a verdict into a rate.
+    attempts = [task for task in tasks for _ in range(repeat)]
+
+    report = RunReport(
+        started_at=now_iso(), agent=agent_name, parallel=parallel, repeat=repeat
+    )
     if prepared:
         report.environment = prepared.to_dict()
     wall = time.monotonic()
 
     if parallel == 1:
-        for task in tasks:
+        for task in attempts:
             report.results.append(await run_task(client, task, agent_name, prepared=prepared))
         report.concurrency_ceiling = 1
     else:
@@ -175,7 +184,7 @@ async def run_suite(
             async with limiter.slot():
                 return await run_task(client, task, agent_name, limiter.shrink, prepared)
 
-        report.results = list(await asyncio.gather(*(guarded(t) for t in tasks)))
+        report.results = list(await asyncio.gather(*(guarded(t) for t in attempts)))
         report.concurrency_ceiling = limiter.limit
 
     report.wall_clock_s = time.monotonic() - wall
