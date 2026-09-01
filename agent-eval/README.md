@@ -231,6 +231,19 @@ Gemini's model defaults to `gemini-flash-lite-latest`
 multi-observation tasks — and the harness tells you by how much, which is
 rather the point.
 
+**On a free tier, mind the request budget.** Gemini's free tier allows 15
+requests per minute per model, and a six-task run makes roughly five calls per
+task, so a sequential run walks into it. The agent honours the delay the API
+itself returns and retries; if it is still limited after several attempts it
+raises `AgentUnavailable`.
+
+That distinction matters. A rate limit means the agent never got to act, so
+scoring the attempt as a failure would blame it for someone else's
+infrastructure. Those attempts are reported **ERROR**, not FAIL — the same rule
+that stops a busy sandbox account being recorded as a failing agent. If the
+work was already finished when the outage hit, the end state still earns the
+pass, because the end state is the measurement.
+
 ## In your CI
 
 ```yaml

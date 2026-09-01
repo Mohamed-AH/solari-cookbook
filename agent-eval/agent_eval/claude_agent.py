@@ -23,7 +23,7 @@ import os
 import sys
 from typing import Any
 
-from .agent import Action, Observation, finish
+from .agent import Action, AgentUnavailable, Observation, finish
 from .tool_surface import SYSTEM_PROMPT, anthropic_tools, to_action
 
 MODEL = os.environ.get("AGENT_EVAL_MODEL", "claude-opus-5")
@@ -123,11 +123,16 @@ class ClaudeAgent:
         except anthropic.NotFoundError as exc:
             raise RuntimeError(f"model {self._model!r} not found: {exc}") from exc
         except anthropic.RateLimitError as exc:
-            raise RuntimeError(f"rate limited after the SDK's own retries: {exc}") from exc
+            # Never got to act — the provider's problem, not the agent's.
+            raise AgentUnavailable(
+                f"rate limited after the SDK's own retries: {exc}"
+            ) from exc
         except anthropic.APIStatusError as exc:
+            if exc.status_code >= 500:
+                raise AgentUnavailable(f"API unavailable ({exc.status_code}): {exc}") from exc
             raise RuntimeError(f"API error {exc.status_code}: {exc.message}") from exc
         except anthropic.APIConnectionError as exc:
-            raise RuntimeError(f"could not reach the API: {exc}") from exc
+            raise AgentUnavailable(f"could not reach the API: {exc}") from exc
 
     # -- the Agent interface ---------------------------------------------
 

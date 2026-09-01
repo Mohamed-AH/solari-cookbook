@@ -25,6 +25,16 @@ OUTPUT_LIMIT = 4000
 DEFAULT_WORKDIR = "/workspace"
 
 
+class AgentUnavailable(RuntimeError):
+    """The agent could not act for reasons that are nothing to do with the task.
+
+    A rate limit, an outage, an expired key. The agent never got to try, so
+    scoring the attempt as a failure would blame it for someone else's
+    infrastructure — the same mistake as calling a busy sandbox account a
+    failing agent. The runner reports these as ERROR, not FAIL.
+    """
+
+
 def _clip(text: str, limit: int = OUTPUT_LIMIT) -> str:
     if len(text) <= limit:
         return text
@@ -312,6 +322,19 @@ async def run_agent_loop(
 
         try:
             action = await agent.next_action(obs)
+        except AgentUnavailable as exc:
+            run_record.stop_reason = "agent_unavailable"
+            run_record.error = f"{type(exc).__name__}: {exc}"
+            run_record.steps.append(
+                Step(
+                    index=index,
+                    observation=obs.render(),
+                    action={"kind": "none"},
+                    result={"ok": False, "note": run_record.error},
+                    duration_s=time.monotonic() - started,
+                )
+            )
+            return run_record
         except Exception as exc:  # noqa: BLE001 - recorded; end state is still scored
             run_record.stop_reason = "agent_error"
             run_record.error = f"{type(exc).__name__}: {exc}"

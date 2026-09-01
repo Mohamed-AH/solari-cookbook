@@ -273,3 +273,82 @@ class TestMaxSteps(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestUnavailableAgentIsNotBlamed(unittest.TestCase):
+    """A provider outage must not be recorded as the agent being wrong.
+
+    Regression from a live Gemini run: the free tier's rate limit hit on the
+    first call and two tasks were reported FAIL after one step. The agent had
+    not done anything to fail at.
+    """
+
+    def _run(self, task, agent):
+        from agent_eval.runner import run_task  # noqa: PLC0415
+        from local_sandbox import LocalSandboxClient  # noqa: PLC0415
+
+        async def go():
+            async with LocalSandboxClient() as client:
+                return await run_task(client, task, agent)
+
+        return asyncio.run(go())
+
+    def _task_with(self, base, agent_factory):
+        import dataclasses  # noqa: PLC0415
+
+        return dataclasses.replace(base, agents={**base.agents, "flaky": agent_factory})
+
+    def test_an_agent_that_cannot_act_reports_error_not_fail(self):
+        from agent_eval.agent import AgentUnavailable  # noqa: PLC0415
+
+        class RateLimited:
+            name = "flaky"
+
+            async def next_action(self, obs):
+                raise AgentUnavailable("429 quota exceeded")
+
+        task = self._task_with(TASKS[0], lambda: RateLimited())
+        result = self._run(task, "flaky")
+        self.assertEqual(result.status, "ERROR", "a rate limit was blamed on the agent")
+        self.assertEqual(result.stop_reason, "agent_unavailable")
+        self.assertIn("429", result.error)
+
+    def test_an_agent_that_acted_wrongly_still_fails(self):
+        """The distinction has to cut both ways or it is worthless."""
+        from agent_eval.agent import finish  # noqa: PLC0415
+
+        class DoesNothing:
+            name = "flaky"
+
+            async def next_action(self, obs):
+                return finish("did nothing at all")
+
+        task = self._task_with(TASKS[0], lambda: DoesNothing())
+        result = self._run(task, "flaky")
+        self.assertEqual(result.status, "FAIL")
+
+    def test_work_finished_before_the_outage_still_passes(self):
+        """End state is the measurement, so a late outage does not undo it."""
+        from agent_eval.agent import AgentUnavailable  # noqa: PLC0415
+
+        correct = TASKS[0].agents["correct"]
+
+        class DiesAfterSucceeding:
+            name = "flaky"
+
+            def __init__(self):
+                self._inner = correct()
+                self._done = False
+
+            async def next_action(self, obs):
+                if self._done:
+                    raise AgentUnavailable("429 quota exceeded")
+                action = await self._inner.next_action(obs)
+                if action.kind == "finish":
+                    self._done = True
+                    raise AgentUnavailable("429 quota exceeded")
+                return action
+
+        task = self._task_with(TASKS[0], lambda: DiesAfterSucceeding())
+        result = self._run(task, "flaky")
+        self.assertEqual(result.status, "PASS", "a late outage undid a completed task")
