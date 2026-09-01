@@ -60,6 +60,7 @@ class RunReport:
     wall_clock_s: float = 0.0
     started_at: str = ""
     agent: str = ""
+    parallel: int = 1
 
     @property
     def summed_latency_s(self) -> float:
@@ -80,6 +81,15 @@ class RunReport:
     @property
     def pass_rate(self) -> float:
         return self.passed / len(self.results) if self.results else 0.0
+
+    @property
+    def speedup(self) -> float:
+        """Summed sandbox latency over wall clock.
+
+        Not a throughput claim — it is how much of the suite's time was spent
+        waiting on sandboxes that could have been waited on at the same time.
+        """
+        return self.summed_latency_s / self.wall_clock_s if self.wall_clock_s else 0.0
 
     @property
     def exit_code(self) -> int:
@@ -106,6 +116,7 @@ class RunReport:
             "started_at": self.started_at,
             "agent": self.agent,
             "python": platform.python_version(),
+            "parallel": self.parallel,
             "summary": {
                 "total": len(self.results),
                 "passed": self.passed,
@@ -114,6 +125,7 @@ class RunReport:
                 "pass_rate": round(self.pass_rate, 4),
                 "wall_clock_s": round(self.wall_clock_s, 2),
                 "summed_latency_s": round(self.summed_latency_s, 2),
+                "speedup": round(self.speedup, 2),
             },
             "results": [r.to_dict() for r in self.results],
         }
@@ -134,7 +146,10 @@ def render(report: RunReport, *, verbose: bool = False) -> str:
     """Render a run as terminal text. Failing checks always show their detail."""
     lines: list[str] = []
     lines.append("")
-    lines.append(f"agent-eval — agent={report.agent}  started={report.started_at}")
+    lines.append(
+        f"agent-eval — agent={report.agent}  parallel={report.parallel}  "
+        f"started={report.started_at}"
+    )
     lines.append("=" * 72)
 
     for result in report.results:
@@ -161,9 +176,71 @@ def render(report: RunReport, *, verbose: bool = False) -> str:
         f"  ({report.pass_rate * 100:.0f}%)"
         f"  failed={report.failed} errored={report.errored}"
     )
-    lines.append(
+    timing = (
         f"wall clock {report.wall_clock_s:.1f}s"
         f"  |  summed sandbox latency {report.summed_latency_s:.1f}s"
     )
+    if report.parallel > 1:
+        timing += f"  |  {report.speedup:.1f}x on {report.parallel} at a time"
+    lines.append(timing)
     lines.append("")
     return "\n".join(lines)
+
+
+def render_markdown(report: RunReport) -> str:
+    """A summary for a CI job summary or a PR comment.
+
+    Failing checks are shown with the command that decided them, because the
+    person reading this in CI cannot re-run anything from where they are
+    sitting.
+    """
+    verdict = "all tasks passed" if report.exit_code == 0 else "regressions detected"
+    out: list[str] = []
+    out.append(f"## agent-eval — {verdict}")
+    out.append("")
+    out.append(
+        f"**{report.passed}/{len(report.results)} passed** "
+        f"({report.pass_rate * 100:.0f}%) · agent `{report.agent}` · "
+        f"{report.wall_clock_s:.1f}s wall clock"
+    )
+    if report.errored:
+        out.append("")
+        out.append(
+            f"> {report.errored} task(s) reported ERROR — the harness failed, "
+            f"which is not a verdict on the agent."
+        )
+    out.append("")
+    out.append("| | task | steps | time | checks |")
+    out.append("| --- | --- | --- | --- | --- |")
+    for r in report.results:
+        icon = {PASS: "PASS", FAIL: "FAIL", ERROR: "ERROR"}.get(r.status, r.status)
+        failed = sum(1 for c in r.checks if not c.passed)
+        checks = f"{len(r.checks) - failed}/{len(r.checks)}" if r.checks else "—"
+        out.append(
+            f"| {icon} | `{r.task_id}` | {r.steps} | {r.duration_s:.1f}s | {checks} |"
+        )
+
+    problems = [r for r in report.results if r.status != PASS]
+    if problems:
+        out.append("")
+        out.append("<details><summary>What failed</summary>")
+        out.append("")
+        for r in problems:
+            out.append(f"**`{r.task_id}`** — {r.status}, stopped: {r.stop_reason or 'n/a'}")
+            if r.error:
+                out.append(f"- harness: {r.error}")
+            for c in r.checks:
+                if not c.passed:
+                    out.append(f"- {c.name} — {c.detail}")
+                    if c.command:
+                        out.append(f"  - `{c.command}` exited {c.exit_code}")
+            out.append("")
+        out.append("</details>")
+
+    out.append("")
+    out.append(
+        f"_summed sandbox latency {report.summed_latency_s:.1f}s across "
+        f"{len(report.results)} sandboxes, {report.parallel} at a time_"
+    )
+    out.append("")
+    return "\n".join(out)

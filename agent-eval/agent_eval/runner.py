@@ -16,6 +16,7 @@ Two rules shape the error handling here:
 
 from __future__ import annotations
 
+import asyncio
 import time
 import traceback
 from typing import Any
@@ -117,11 +118,33 @@ async def run_task(client: Any, task: Task, agent_name: str) -> TaskResult:
         result.stages = stages
 
 
-async def run_suite(client: Any, tasks: list[Task], agent_name: str) -> RunReport:
-    """Run every task in sequence. Parallel execution arrives in phase 2."""
-    report = RunReport(started_at=now_iso(), agent=agent_name)
+async def run_suite(
+    client: Any, tasks: list[Task], agent_name: str, *, parallel: int = 1
+) -> RunReport:
+    """Run every task, at most `parallel` sandboxes at a time.
+
+    Bounded by a semaphore, not an unbounded gather: there is an account-level
+    concurrency cap, and firing every task at once would spend the run arguing
+    with it. Results are collected in task order however they finish, so two
+    runs of the same suite produce comparable reports.
+    """
+    if parallel < 1:
+        raise ValueError(f"parallel must be at least 1, got {parallel}")
+
+    report = RunReport(started_at=now_iso(), agent=agent_name, parallel=parallel)
     wall = time.monotonic()
-    for task in tasks:
-        report.results.append(await run_task(client, task, agent_name))
+
+    if parallel == 1:
+        for task in tasks:
+            report.results.append(await run_task(client, task, agent_name))
+    else:
+        limit = asyncio.Semaphore(parallel)
+
+        async def guarded(task: Task) -> TaskResult:
+            async with limit:
+                return await run_task(client, task, agent_name)
+
+        report.results = list(await asyncio.gather(*(guarded(t) for t in tasks)))
+
     report.wall_clock_s = time.monotonic() - wall
     return report

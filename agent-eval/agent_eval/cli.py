@@ -5,6 +5,7 @@
     agent-eval --tasks csv_error_rate
     agent-eval --agent sabotage --expect fail      # the harness's own self-test
     agent-eval --agent claude                     # the reference LLM agent
+    agent-eval --agent my_pkg.agents:MyAgent      # your own agent
 """
 
 from __future__ import annotations
@@ -15,10 +16,10 @@ import sys
 from pathlib import Path
 
 from .config import MissingApiKey, load_dotenv
-from .report import render
+from .report import render, render_markdown
 from .runner import run_suite
 from .sandbox import make_client
-from .builtins import known_agents
+from .builtins import AgentImportError, known_agents
 from .task import TaskLoadError, discover
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -48,7 +49,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--agent",
         default="correct",
-        help="which agent to run (default: correct)",
+        help=(
+            "which agent to run: a name defined by the task, a built-in "
+            "('claude'), or an import path to your own — "
+            "'my_package.my_module:MyAgent' (default: correct)"
+        ),
     )
     parser.add_argument(
         "--expect",
@@ -57,9 +62,28 @@ def build_parser() -> argparse.ArgumentParser:
         help="expected outcome for every task; 'fail' is the harness self-test",
     )
     parser.add_argument(
+        "--parallel",
+        type=int,
+        default=1,
+        metavar="N",
+        help=(
+            "run up to N tasks at once, each in its own sandbox (default: 1). "
+            "Bounded by a semaphore; raise it until you hit your account's "
+            "concurrency cap"
+        ),
+    )
+    parser.add_argument(
         "--output",
         default="",
         help="write the JSON report to this path (default: none)",
+    )
+    parser.add_argument(
+        "--markdown",
+        default="",
+        help=(
+            "write a markdown summary to this path — point it at "
+            "$GITHUB_STEP_SUMMARY in CI"
+        ),
     )
     parser.add_argument(
         "--tasks-dir",
@@ -82,13 +106,18 @@ async def _run(args: argparse.Namespace) -> int:
             print(f"{task.id}\n    {task.summary}\n    agents: {agents}  max_steps: {task.max_steps}")
         return 0
 
+    if args.parallel < 1:
+        print("error: --parallel must be at least 1", file=sys.stderr)
+        return 2
+
+    concurrency = "one at a time" if args.parallel == 1 else f"{args.parallel} at a time"
     print(
-        f"running {len(tasks)} task(s) from {tasks_dir} "
-        f"with agent={args.agent}, expecting every task to {args.expect}"
+        f"running {len(tasks)} task(s) from {tasks_dir} with agent={args.agent}, "
+        f"{concurrency}, expecting every task to {args.expect}"
     )
 
     async with make_client() as client:
-        report = await run_suite(client, tasks, args.agent)
+        report = await run_suite(client, tasks, args.agent, parallel=args.parallel)
 
     print(render(report, verbose=args.verbose))
 
@@ -96,6 +125,14 @@ async def _run(args: argparse.Namespace) -> int:
         path = Path(args.output)
         report.write_json(path)
         print(f"report written to {path}")
+
+    if args.markdown:
+        path = Path(args.markdown)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # Appended, not overwritten: $GITHUB_STEP_SUMMARY accumulates.
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(render_markdown(report) + "\n")
+        print(f"markdown summary written to {path}")
 
     code = report.exit_code_for(args.expect)
     if code == 0 and args.expect == "fail":
@@ -108,7 +145,7 @@ def main() -> int:
     load_dotenv(PROJECT_ROOT / ".env")
     try:
         return asyncio.run(_run(args))
-    except (MissingApiKey, TaskLoadError) as exc:
+    except (MissingApiKey, TaskLoadError, AgentImportError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
