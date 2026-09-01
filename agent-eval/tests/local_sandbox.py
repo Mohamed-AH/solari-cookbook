@@ -31,6 +31,12 @@ class LocalCommandResult:
 
 
 @dataclass
+class SnapshotRecord:
+    id: str
+    name: str | None = None
+
+
+@dataclass
 class LocalEntry:
     name: str
     dir: bool
@@ -127,6 +133,12 @@ class LocalSandbox:
         """Rewrite absolute paths in argv; leave flags and plain words alone."""
         return str(self.map_path(arg)) if arg.startswith("/") else arg
 
+    async def snapshot(self, name: str | None = None) -> str:
+        """Freeze this sandbox's filesystem and return an id for forking."""
+        if self._client is None:
+            raise RuntimeError("snapshot requires a client-created handle")
+        return self._client._store_snapshot(self.root, name)
+
     async def connect(self) -> None:
         self.connected = True
 
@@ -155,12 +167,26 @@ class LocalSandboxClient:
         self._fail_with = fail_creates_with
         self._fail_times = fail_times
         self.create_calls = 0
+        self.snapshots: list[SnapshotRecord] = []
+        self._snapshot_roots: dict[str, Path] = {}
         self.live = 0
         self.peak_live = 0
         self.killed = 0
         self._roots: list[Path] = []
 
-    async def create(self, **_: Any) -> LocalSandbox:
+    def _store_snapshot(self, root: Path, name: str | None) -> str:
+        snapshot_id = f"snap_{len(self.snapshots):03d}"
+        frozen = Path(tempfile.mkdtemp(prefix="agent-eval-snap-"))
+        shutil.rmtree(frozen)
+        shutil.copytree(root, frozen)
+        self._snapshot_roots[snapshot_id] = frozen
+        self.snapshots.append(SnapshotRecord(id=snapshot_id, name=name))
+        return snapshot_id
+
+    async def list_snapshots(self, **_: Any) -> list["SnapshotRecord"]:
+        return list(self.snapshots)
+
+    async def create(self, from_snapshot: str | None = None, **_: Any) -> LocalSandbox:
         self.create_calls += 1
         if self._fail_times > 0 and self._fail_with is not None:
             self._fail_times -= 1
@@ -183,13 +209,20 @@ class LocalSandboxClient:
             self.live -= 1
             raise
         root = Path(tempfile.mkdtemp(prefix="agent-eval-local-"))
+        if from_snapshot is not None:
+            # Forking inherits the prepared filesystem, exactly as the real
+            # thing does — that is the whole point of the snapshot.
+            if from_snapshot not in self._snapshot_roots:
+                raise ValueError(f"unknown snapshot: {from_snapshot}")
+            shutil.rmtree(root)
+            shutil.copytree(self._snapshot_roots[from_snapshot], root)
         self._roots.append(root)
         sandbox = LocalSandbox(root)
         sandbox._client = self
         return sandbox
 
     async def aclose(self) -> None:
-        for root in self._roots:
+        for root in list(self._roots) + list(self._snapshot_roots.values()):
             shutil.rmtree(root, ignore_errors=True)
 
     async def __aenter__(self) -> "LocalSandboxClient":

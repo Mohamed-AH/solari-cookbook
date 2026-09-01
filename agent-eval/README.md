@@ -5,10 +5,10 @@ Execution-based regression testing for LLM agents, on Solari sandboxes.
 > Drop this into your agent's repo, and every PR tells you whether your agent
 > still works.
 
-**Status: phase 2 — usable by someone else, and verified against real
-sandboxes.** Six tasks, a bounded observation -> action -> result loop, a
-pluggable agent interface, an adaptive parallel runner, and a GitHub Action you
-can drop into your own agent's repo. Snapshots land next.
+**Status: phase 3 — snapshots.** Six tasks, a bounded observation -> action -> result loop, a
+pluggable agent interface, an adaptive parallel runner, a prepared environment
+built once and forked per task, and a GitHub Action you can drop into your own
+agent's repo.
 
 ## What it caught
 
