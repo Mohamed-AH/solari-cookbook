@@ -23,6 +23,8 @@ REQUIRED_TOOLS = ("test", "cat", "sha256sum", "python3")
 
 _VERIFIER_DIR = "/opt/agent_eval"
 _VERIFIER_PATH = _VERIFIER_DIR + "/verify_number.py"
+_JSON_VERIFIER_PATH = _VERIFIER_DIR + "/verify_json.py"
+_JSON_EXPECTED_PATH = _VERIFIER_DIR + "/expected.json"
 
 # Written into the sandbox by `Checker.number_in_file_equals`. Everything it
 # needs arrives as argv, so nothing is ever interpolated into this source.
@@ -46,6 +48,47 @@ except ValueError:
 want = round(float(expected), places)
 print("expected=%s actual=%s raw=%r" % (want, actual, raw))
 sys.exit(0 if actual == want else 1)
+'''
+
+# Compares two JSON documents. Both arrive as file paths in argv.
+_JSON_VERIFIER = '''"""Compare a JSON file against an expected JSON file."""
+import json
+import sys
+
+actual_path, expected_path = sys.argv[1], sys.argv[2]
+
+try:
+    raw = open(actual_path, encoding="utf-8").read()
+except OSError as exc:
+    print("cannot read %s: %s" % (actual_path, exc))
+    sys.exit(2)
+
+try:
+    actual = json.loads(raw)
+except ValueError as exc:
+    print("not valid JSON: %s" % (exc,))
+    sys.exit(3)
+
+expected = json.load(open(expected_path, encoding="utf-8"))
+
+if actual == expected:
+    print("match")
+    sys.exit(0)
+
+if isinstance(actual, dict) and isinstance(expected, dict):
+    missing = sorted(set(expected) - set(actual))
+    extra = sorted(set(actual) - set(expected))
+    if missing:
+        print("missing keys: %s" % (", ".join(missing),))
+    if extra:
+        print("unexpected keys: %s" % (", ".join(extra),))
+    for key in sorted(set(expected) & set(actual)):
+        if actual[key] != expected[key]:
+            print("key %r: expected %r, got %r" % (key, expected[key], actual[key]))
+else:
+    print("expected %r, got %r" % (expected, actual))
+
+sys.exit(1)
 '''
 
 
@@ -320,6 +363,75 @@ class Checker:
         return self._record(
             CheckResult(
                 name=name or f"{path} == {expected} (to {places} dp)",
+                passed=res.exitCode == 0,
+                detail=f"{reason}: {res.stdout.strip() or res.stderr.strip()}",
+                command=rendered,
+                exit_code=res.exitCode,
+                stdout=res.stdout,
+                stderr=res.stderr,
+            )
+        )
+
+    async def stdout_excludes(
+        self,
+        cmd: str,
+        args: Sequence[str],
+        needle: str,
+        *,
+        name: str | None = None,
+    ) -> CheckResult:
+        """Assert a command exits 0 and its stdout does NOT contain `needle`.
+
+        For proving an absence — a secret that never entered git history, a
+        path that was not touched.
+        """
+        rendered = self._render(cmd, args)
+        res = await self._exec(cmd, args)
+        ok = res.exitCode == 0 and needle not in res.stdout
+        if res.exitCode != 0:
+            detail = f"command failed (exit {res.exitCode}), so absence is unproven"
+        elif ok:
+            detail = f"{needle!r} is absent, as required"
+        else:
+            detail = f"{needle!r} is present and must not be"
+        return self._record(
+            CheckResult(
+                name=name or f"stdout of `{rendered}` excludes {needle!r}",
+                passed=ok,
+                detail=detail,
+                command=rendered,
+                exit_code=res.exitCode,
+                stdout=res.stdout,
+                stderr=res.stderr,
+            )
+        )
+
+    async def json_matches(
+        self, path: str, expected: Any, *, name: str | None = None
+    ) -> CheckResult:
+        """Assert the JSON document at `path` equals `expected` exactly.
+
+        Both documents reach the verifier as files, so no expected value is
+        ever interpolated into source or into a shell command. Exit codes:
+        0 match, 1 mismatch, 2 unreadable, 3 not valid JSON.
+        """
+        import json as _json
+
+        await self._exec("mkdir", ["-p", _VERIFIER_DIR])
+        await self._sb.files.write(_JSON_VERIFIER_PATH, _JSON_VERIFIER)
+        await self._sb.files.write(_JSON_EXPECTED_PATH, _json.dumps(expected, sort_keys=True))
+        args = [_JSON_VERIFIER_PATH, path, _JSON_EXPECTED_PATH]
+        rendered = self._render("python3", args)
+        res = await self._exec("python3", args)
+        reason = {
+            0: "matches",
+            1: "differs",
+            2: "file unreadable",
+            3: "file is not valid JSON",
+        }.get(res.exitCode, f"verifier exited {res.exitCode}")
+        return self._record(
+            CheckResult(
+                name=name or f"{path} matches the required schema and values",
                 passed=res.exitCode == 0,
                 detail=f"{reason}: {res.stdout.strip() or res.stderr.strip()}",
                 command=rendered,

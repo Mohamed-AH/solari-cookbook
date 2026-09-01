@@ -1,9 +1,9 @@
 """Command line entry point.
 
     agent-eval --list
-    agent-eval                              # run every task with the correct solver
+    agent-eval                              # run every task with the correct agent
     agent-eval --tasks csv_error_rate
-    agent-eval --solver sabotage --expect fail    # the harness's own self-test
+    agent-eval --agent sabotage --expect fail      # the harness's own self-test
 """
 
 from __future__ import annotations
@@ -44,9 +44,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="comma-separated task ids to run (default: every task in tasks/)",
     )
     parser.add_argument(
-        "--solver",
+        "--agent",
         default="correct",
-        help="which solver to run (default: correct)",
+        help="which agent to run (default: correct)",
     )
     parser.add_argument(
         "--expect",
@@ -76,17 +76,17 @@ async def _run(args: argparse.Namespace) -> int:
 
     if args.list:
         for task in tasks:
-            solvers = ", ".join(sorted(task.solvers)) or "<none>"
-            print(f"{task.id}\n    {task.summary}\n    solvers: {solvers}")
+            agents = ", ".join(sorted(task.agents)) or "<none>"
+            print(f"{task.id}\n    {task.summary}\n    agents: {agents}  max_steps: {task.max_steps}")
         return 0
 
     print(
         f"running {len(tasks)} task(s) from {tasks_dir} "
-        f"with solver={args.solver}, expecting every task to {args.expect}"
+        f"with agent={args.agent}, expecting every task to {args.expect}"
     )
 
     async with make_client() as client:
-        report = await run_suite(client, tasks, args.solver)
+        report = await run_suite(client, tasks, args.agent)
 
     print(render(report, verbose=args.verbose))
 
@@ -97,7 +97,7 @@ async def _run(args: argparse.Namespace) -> int:
 
     code = report.exit_code_for(args.expect)
     if code == 0 and args.expect == "fail":
-        print("self-test OK: every task failed under the sabotage solver, as required.")
+        print("self-test OK: every task failed under the sabotage agent, as required.")
     return code
 
 
