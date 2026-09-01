@@ -20,6 +20,17 @@ from .sandbox import make_client
 from .task import TaskLoadError, discover
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+BUNDLED_TASKS = PROJECT_ROOT / "tasks"
+
+
+def default_tasks_dir() -> Path:
+    """Prefer a `tasks/` directory in the current project, then the bundled one.
+
+    The point of this harness is your tasks, not ours, so a `tasks/` beside the
+    repo you run it from wins.
+    """
+    local = Path.cwd() / "tasks"
+    return local if local.is_dir() else BUNDLED_TASKS
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -50,8 +61,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--tasks-dir",
-        default=str(PROJECT_ROOT / "tasks"),
-        help="directory to load tasks from",
+        default="",
+        help="directory to load tasks from (default: ./tasks, else the bundled tasks)",
     )
     parser.add_argument("--list", action="store_true", help="list tasks and exit")
     parser.add_argument("-v", "--verbose", action="store_true", help="show passing checks too")
@@ -60,7 +71,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 async def _run(args: argparse.Namespace) -> int:
     only = [t.strip() for t in args.tasks.split(",") if t.strip()]
-    tasks = discover(Path(args.tasks_dir), only=only or None)
+    tasks_dir = Path(args.tasks_dir) if args.tasks_dir else default_tasks_dir()
+    tasks = discover(tasks_dir, only=only or None)
 
     if args.list:
         for task in tasks:
@@ -68,7 +80,10 @@ async def _run(args: argparse.Namespace) -> int:
             print(f"{task.id}\n    {task.summary}\n    solvers: {solvers}")
         return 0
 
-    print(f"running {len(tasks)} task(s) with solver={args.solver}, expecting every task to {args.expect}")
+    print(
+        f"running {len(tasks)} task(s) from {tasks_dir} "
+        f"with solver={args.solver}, expecting every task to {args.expect}"
+    )
 
     async with make_client() as client:
         report = await run_suite(client, tasks, args.solver)
