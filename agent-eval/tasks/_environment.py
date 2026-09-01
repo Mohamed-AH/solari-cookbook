@@ -4,14 +4,24 @@ Built once per run (or reused across runs), snapshotted, and forked per task.
 Files starting with `_` are not tasks — the loader skips them.
 
 In your own repo this is where you would clone the project and install its
-dependencies. Here it installs a test runner and pre-creates the directory the
-harness writes its verifier scripts into: small enough to stay honest about,
-expensive enough that paying for it six times instead of once is the whole
-reason snapshots exist.
+dependencies. What is here deliberately stays cheap — and that means you should
+NOT run this suite with `--snapshot`.
+
+Measured on a real account, restoring a snapshot costs ~9.5s more than booting
+the plain template, so a preparation has to be more expensive than that before
+forking wins. Varying only this file:
+
+    preparation                                    cost    verdict
+    pytest only                                     1.7s   skip  (+46s a run)
+    a few mid-size wheels                           7.7s   skip  (+11s a run)
+    pandas, scipy, scikit-learn, matplotlib, ...   15.5s   USE   (-28s a run)
+
+Run `agent-eval --bench-snapshot 3` against your own preparation rather than
+copying anyone's answer, including this one.
 
 Tasks must not *require* anything installed here. They run against the plain
-`base` template too, so `--no-snapshot` stays a fair comparison rather than a
-different suite.
+`base` template too, so running with and without a snapshot compares the same
+suite rather than two different ones.
 """
 
 from __future__ import annotations

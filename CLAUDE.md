@@ -294,10 +294,23 @@ environment*:
 - snapshots are **opt-in** (`--snapshot`), not the default
 - `--bench-snapshot N` reports boot / preparation / restore separately and
   prints USE SNAPSHOTS or SKIP SNAPSHOTS with the breakeven number
-- snapshot restore has a fixed cost; the preparation must exceed it to win.
-  The reference `tasks/_environment.py` (pip install pytest) is too cheap —
-  likely already present in `base`. Cloning a repo and installing real
-  dependencies is the case where forking wins.
+- snapshot restore has a fixed cost (~9.5s here); the preparation must exceed
+  it to win. Measured by varying only `tasks/_environment.py`:
+
+  | preparation | cost | verdict | effect on a 6-task run |
+  | --- | --- | --- | --- |
+  | pytest only | 1.7s | skip | +46.3s |
+  | a few mid-size wheels | 7.7s | skip | +10.8s |
+  | pandas, scipy, scikit-learn, matplotlib, polars, nltk | 15.5s | **use** | −28.3s |
+
+  Template boot is a steady ~1.7s; snapshot restore a steady ~11-12.5s. The
+  crossover is real and reproducible, and the shipped preparation sits below
+  it on purpose — so the default (`--snapshot` off) is the right one.
+
+- Trying to prepare with `torch` failed with `No space left on device`. The
+  preparation raised, nothing was snapshotted, and the run stopped. That guard
+  is load-bearing: a half-built environment would otherwise have been forked
+  into every task in the run.
 
 This is a better story than "snapshots are fast", and it is a real datapoint
 about a workload Solari is not yet visible in.
