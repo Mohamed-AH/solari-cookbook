@@ -146,8 +146,12 @@ class LocalSandboxClient:
     """
 
     def __init__(self, *, boot_delay_s: float = 0.0, fail_creates_with: Any = None,
-                 fail_times: int = 0) -> None:
+                 fail_times: int = 0, max_concurrent: int | None = None) -> None:
         self.boot_delay_s = boot_delay_s
+        # A hard account ceiling, like a free tier's. Refusals are raised the
+        # way the gateway raises them.
+        self.max_concurrent = max_concurrent
+        self.refusals = 0
         self._fail_with = fail_creates_with
         self._fail_times = fail_times
         self.create_calls = 0
@@ -161,14 +165,27 @@ class LocalSandboxClient:
         if self._fail_times > 0 and self._fail_with is not None:
             self._fail_times -= 1
             raise self._fail_with
-        if self.boot_delay_s:
-            await asyncio.sleep(self.boot_delay_s)
+        if self.max_concurrent is not None and self.live >= self.max_concurrent:
+            self.refusals += 1
+            from solari_sandbox import ConcurrencyLimitError  # noqa: PLC0415
+
+            raise ConcurrencyLimitError("Too many concurrent sessions")
+
+        # Count the slot before the first await. With the increment after the
+        # boot delay, every concurrent caller saw live=0 and the ceiling was
+        # never enforced — the check and the claim have to be atomic.
+        self.live += 1
+        self.peak_live = max(self.peak_live, self.live)
+        try:
+            if self.boot_delay_s:
+                await asyncio.sleep(self.boot_delay_s)
+        except BaseException:
+            self.live -= 1
+            raise
         root = Path(tempfile.mkdtemp(prefix="agent-eval-local-"))
         self._roots.append(root)
         sandbox = LocalSandbox(root)
         sandbox._client = self
-        self.live += 1
-        self.peak_live = max(self.peak_live, self.live)
         return sandbox
 
     async def aclose(self) -> None:

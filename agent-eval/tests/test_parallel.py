@@ -119,6 +119,99 @@ class TestConcurrencyCapRetry(unittest.TestCase):
         self.assertIn("ConcurrencyLimit", report.results[0].error)
 
 
+class TestAdaptiveLimiter(unittest.TestCase):
+    def test_shrinking_never_goes_below_one(self):
+        from agent_eval.concurrency import AdaptiveLimiter  # noqa: PLC0415
+
+        async def go():
+            limiter = AdaptiveLimiter(3)
+            for _ in range(10):
+                await limiter.shrink()
+            return limiter.limit, limiter.requested
+
+        limit, requested = asyncio.run(go())
+        self.assertEqual(limit, 1)
+        self.assertEqual(requested, 3, "the original request is still recorded")
+
+    def test_shrinking_while_slots_are_held_does_not_deadlock(self):
+        """In-flight work keeps its slot; the lower ceiling applies to waiters."""
+        from agent_eval.concurrency import AdaptiveLimiter  # noqa: PLC0415
+
+        async def go():
+            limiter = AdaptiveLimiter(3)
+            order = []
+
+            async def worker(name, hold):
+                async with limiter.slot():
+                    order.append(name)
+                    await asyncio.sleep(hold)
+
+            await limiter.acquire()
+            await limiter.acquire()
+            await limiter.acquire()
+            self.assertEqual(limiter.active, 3)
+            await limiter.shrink()  # ceiling now 2, three still held
+            task = asyncio.create_task(worker("waiter", 0))
+            await asyncio.sleep(0.05)
+            self.assertEqual(order, [], "a waiter got in above the ceiling")
+            for _ in range(3):
+                await limiter.release()
+            await asyncio.wait_for(task, timeout=2)
+            return order
+
+        self.assertEqual(asyncio.run(go()), ["waiter"])
+
+    def test_zero_is_rejected(self):
+        from agent_eval.concurrency import AdaptiveLimiter  # noqa: PLC0415
+
+        with self.assertRaises(ValueError):
+            AdaptiveLimiter(0)
+
+
+class TestAccountCeilingIsDiscovered(unittest.TestCase):
+    """Regression for the first live run: --parallel 3 against a lower cap.
+
+    The account refused the third sandbox, the retry budget ran out while
+    other tasks still held theirs, and a task was reported ERROR having never
+    been given a machine. Asking for more than the account allows must cost
+    time, not results.
+    """
+
+    def setUp(self):
+        self._backoff = sandbox_module.CREATE_BACKOFF_S
+        sandbox_module.CREATE_BACKOFF_S = 0.01
+
+    def tearDown(self):
+        sandbox_module.CREATE_BACKOFF_S = self._backoff
+
+    def test_suite_completes_when_the_account_allows_fewer_than_requested(self):
+        client = LocalSandboxClient(max_concurrent=2, boot_delay_s=0.05)
+        report = asyncio.run(run_suite(client, TASKS, "correct", parallel=6))
+        asyncio.run(client.aclose())
+
+        self.assertGreater(client.refusals, 0, "the cap was never exercised")
+        self.assertEqual(report.errored, 0, "a task was blamed for the account being full")
+        self.assertEqual(
+            report.passed, len(TASKS), f"not every task completed: {report.to_dict()['summary']}"
+        )
+        self.assertLessEqual(client.peak_live, 2, "ran above the account ceiling")
+
+    def test_the_ceiling_is_lowered_and_recorded(self):
+        """It backs off until refusals stop, not to an exact discovered number.
+
+        The settling point depends on how long tasks hold their sandboxes: if
+        slots free up quickly, a ceiling above the hard cap stops producing
+        refusals and there is nothing left to correct. What must be true is
+        that it moved off the request and the report says so.
+        """
+        client = LocalSandboxClient(max_concurrent=2, boot_delay_s=0.05)
+        report = asyncio.run(run_suite(client, TASKS, "correct", parallel=6))
+        asyncio.run(client.aclose())
+        self.assertEqual(report.parallel, 6, "the request is still reported")
+        self.assertLess(report.concurrency_ceiling, 6, "the ceiling never came down")
+        self.assertGreaterEqual(report.concurrency_ceiling, 1)
+
+
 class TestMarkdownSummary(unittest.TestCase):
     def _report(self, *statuses):
         report = RunReport(started_at="t", agent="correct", parallel=3)
