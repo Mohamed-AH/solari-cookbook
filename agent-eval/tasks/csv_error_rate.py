@@ -84,43 +84,39 @@ async def check(c: Checker) -> None:
     )
 
 
-# -- reference solvers -------------------------------------------------------
+# -- reference agents --------------------------------------------------------
 # Scripted stand-ins for a real agent, used to prove the harness can both pass
-# and fail. Phase 1 replaces them with a model in the loop; they stay behind as
-# the harness's own regression test.
+# and fail. Neither embeds the expected answer: each one reads the log through
+# the loop and computes a rate from what it actually observed — the correct
+# one over 5xx, the saboteur over everything from 4xx up.
 
-_CORRECT_SRC = '''"""Count 5xx responses and write the rate."""
-import csv
+import csv  # noqa: E402 - kept beside the agents that use it
+import io  # noqa: E402
 
-with open("/workspace/data/requests.csv", newline="", encoding="utf-8") as fh:
-    rows = list(csv.DictReader(fh))
-
-errors = sum(1 for r in rows if int(r["status"]) >= 500)
-with open("/workspace/output/answer.txt", "w", encoding="utf-8") as fh:
-    fh.write("%.4f" % (errors / len(rows)))
-'''
-
-_SABOTAGE_SRC = '''"""The plausible misreading: every 4xx counted as an error too."""
-import csv
-
-with open("/workspace/data/requests.csv", newline="", encoding="utf-8") as fh:
-    rows = list(csv.DictReader(fh))
-
-errors = sum(1 for r in rows if int(r["status"]) >= 400)
-with open("/workspace/output/answer.txt", "w", encoding="utf-8") as fh:
-    fh.write("%.4f" % (errors / len(rows)))
-'''
+from agent_eval.agent import FunctionAgent, Observation, finish, read, write  # noqa: E402
 
 
-def _scripted(source: str):
-    async def solve(sb: Any, prompt: str) -> None:
-        # `prompt` is all a solver ever receives; the fixture is not in scope.
-        await sb.files.write("/workspace/solve.py", source)
-        result = await sb.commands.run("python3", args=["/workspace/solve.py"])
-        if result.exitCode != 0:
-            raise RuntimeError(f"solver script failed (exit {result.exitCode}): {result.stderr}")
+def _rate_from(log_text: str, threshold: int) -> float:
+    rows = list(csv.DictReader(io.StringIO(log_text)))
+    if not rows:
+        raise ValueError("observed an empty log — the read action returned nothing")
+    return sum(1 for r in rows if int(r["status"]) >= threshold) / len(rows)
 
-    return solve
+
+def _make_agent(name: str, threshold: int) -> FunctionAgent:
+    async def next_action(obs: Observation):
+        # Step 0: nothing observed yet — go and read the log.
+        if obs.last_action is None:
+            return read(CSV_PATH)
+        # Step 1: compute from what the read actually returned.
+        if obs.last_action.kind == "read":
+            if not obs.last_result or not obs.last_result.ok:
+                raise RuntimeError(f"could not read the log: {obs.last_result}")
+            rate = _rate_from(obs.last_result.stdout, threshold)
+            return write(ANSWER_PATH, f"{rate:.4f}")
+        return finish(f"wrote the rate to {ANSWER_PATH}")
+
+    return FunctionAgent(name, next_action)
 
 
 TASK = Task(
@@ -129,5 +125,9 @@ TASK = Task(
     prompt=PROMPT,
     setup=setup,
     check=check,
-    solvers={"correct": _scripted(_CORRECT_SRC), "sabotage": _scripted(_SABOTAGE_SRC)},
+    max_steps=6,
+    agents={
+        "correct": lambda: _make_agent("correct", 500),
+        "sabotage": lambda: _make_agent("sabotage", 400),
+    },
 )
