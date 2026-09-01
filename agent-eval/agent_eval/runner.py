@@ -22,6 +22,7 @@ from typing import Any
 
 from .agent import run_agent_loop
 from .assertions import REQUIRED_TOOLS, Checker, preflight
+from .builtins import known_agents, resolve_agent
 from .report import ERROR, FAIL, PASS, RunReport, TaskResult, now_iso
 from .sandbox import sandbox_session
 from .task import Task
@@ -33,9 +34,9 @@ def _describe(exc: BaseException) -> str:
 
 async def run_task(client: Any, task: Task, agent_name: str) -> TaskResult:
     """Run one task attempt in its own sandbox and score it."""
-    factory = task.agents.get(agent_name)
+    factory = resolve_agent(task, agent_name)
     if factory is None:
-        known = ", ".join(sorted(task.agents)) or "<none>"
+        known = ", ".join(known_agents(task)) or "<none>"
         return TaskResult(
             task_id=task.id,
             agent=agent_name,
