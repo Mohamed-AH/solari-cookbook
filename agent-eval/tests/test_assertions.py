@@ -13,7 +13,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from agent_eval.assertions import _NUMBER_VERIFIER, Checker, preflight  # noqa: E402
+from agent_eval.assertions import (  # noqa: E402
+    _NUMBER_VERIFIER,
+    Checker,
+    _parse_sha256,
+    preflight,
+)
 from fake_sandbox import FakeResult, FakeSandbox  # noqa: E402
 
 
@@ -108,6 +113,36 @@ class TestTamperDetection(unittest.TestCase):
         sb = FakeSandbox({("sha256sum", "/t"): FakeResult(1, "", "No such file")})
         c = Checker(sb)
         self.assertFalse(run(c.file_sha256("/t", self.digest)).passed)
+
+
+class TestSha256Parsing(unittest.TestCase):
+    """Regression: a mangled digest must never be reported as "modified"."""
+
+    DIGEST = "b9374f99346ac13d26817c7d3b98e32ee7e2423686fb2e618335a9e0677f61f4"
+
+    def test_plain_output(self):
+        self.assertEqual(_parse_sha256(f"{self.DIGEST}  /workspace/x.csv"), self.DIGEST)
+
+    def test_escaped_output_when_the_path_holds_a_backslash(self):
+        """coreutils prefixes the whole line with a backslash in that case."""
+        line = f"\\{self.DIGEST}  C:\\\\tmp\\\\x.csv"
+        self.assertEqual(_parse_sha256(line), self.DIGEST)
+
+    def test_uppercase_is_normalised(self):
+        self.assertEqual(_parse_sha256(f"{self.DIGEST.upper()}  /x"), self.DIGEST)
+
+    def test_unparseable_output_returns_none_rather_than_a_guess(self):
+        for junk in ("", "sha256sum: command not found", "not-a-hash  /x", "abc123  /x"):
+            with self.subTest(junk=junk):
+                self.assertIsNone(_parse_sha256(junk))
+
+    def test_unparseable_output_fails_the_check_without_claiming_modification(self):
+        sb = FakeSandbox({("sha256sum", "/t"): FakeResult(0, "sha256sum: no such thing")})
+        c = Checker(sb)
+        result = run(c.file_sha256("/t", "0" * 64))
+        self.assertFalse(result.passed)
+        self.assertIn("could not parse", result.detail)
+        self.assertNotIn("modified", result.detail)
 
 
 class TestNumberVerifier(unittest.TestCase):

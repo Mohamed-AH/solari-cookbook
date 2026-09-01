@@ -78,10 +78,15 @@ class _LocalFiles:
     async def write(self, path: str, data: str, mode: int | None = None) -> None:
         target = self._sb.map_path(path)
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(data, encoding="utf-8")
+        # Bytes, never text. `write_text` translates "\n" to os.linesep, which
+        # on Windows silently turns every fixture into CRLF and changes its
+        # sha256 — so a task's "this file is unmodified" check fails against a
+        # file nothing modified. The real sandbox writes bytes over the wire
+        # and does no such thing; the double must not either.
+        target.write_bytes(data.encode("utf-8"))
 
     async def read_text(self, path: str) -> str:
-        return self._sb.map_path(path).read_text(encoding="utf-8")
+        return self._sb.map_path(path).read_bytes().decode("utf-8")
 
     async def read(self, path: str) -> bytes:
         return self._sb.map_path(path).read_bytes()

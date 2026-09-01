@@ -24,9 +24,13 @@ from agent_eval import sandbox as sandbox_module  # noqa: E402
 from agent_eval.report import ERROR, FAIL, PASS, RunReport, TaskResult, render_markdown  # noqa: E402
 from agent_eval.runner import run_suite  # noqa: E402
 from agent_eval.task import discover  # noqa: E402
+from capabilities import supported  # noqa: E402
 from local_sandbox import LocalSandboxClient  # noqa: E402
 
-TASKS = discover(ROOT / "tasks")
+ALL_TASKS = discover(ROOT / "tasks")
+# Concurrency and timing hold for any task; pass/fail verdicts only mean
+# something for tasks whose tools this host actually has.
+TASKS = supported(ALL_TASKS)
 
 
 class TestBoundedConcurrency(unittest.TestCase):
@@ -60,6 +64,10 @@ class TestBoundedConcurrency(unittest.TestCase):
         """Two runs of the same suite must produce comparable reports."""
         _, report = self._run(3)
         self.assertEqual([r.task_id for r in report.results], [t.id for t in TASKS])
+
+    def test_something_is_runnable_here(self):
+        """Guard against the suite silently skipping everything."""
+        self.assertGreater(len(TASKS), 0, "no task can run on this host")
 
     def test_parallel_run_still_passes_every_task(self):
         _, report = self._run(3)
