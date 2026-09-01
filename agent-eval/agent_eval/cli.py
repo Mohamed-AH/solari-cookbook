@@ -93,11 +93,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="directory to load tasks from (default: ./tasks, else the bundled tasks)",
     )
     parser.add_argument(
-        "--no-snapshot",
+        "--snapshot",
         action="store_true",
         help=(
-            "boot every task from the plain template instead of forking a "
-            "prepared snapshot (slower; useful as a baseline)"
+            "build the prepared environment once and fork every task from it. "
+            "Off by default: restoring a snapshot is not always cheaper than "
+            "booting the template and preparing it — run --bench-snapshot to "
+            "find out which is true for your environment"
         ),
     )
     parser.add_argument(
@@ -137,7 +139,7 @@ async def _run(args: argparse.Namespace) -> int:
 
     async with make_client() as client:
         prepared = None
-        if environment and not args.no_snapshot:
+        if environment and args.snapshot:
             what = environment.description or "the prepared environment"
             print(f"preparing the environment ({what})...")
             prepared = await ensure_prepared(

@@ -174,3 +174,65 @@ class TestShippedEnvironment(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestBenchmarkVerdict(unittest.TestCase):
+    """The benchmark has to be able to say "do not use this feature"."""
+
+    def _bench(self, boot, prepare, forked, tasks=6):
+        from agent_eval.environment import SnapshotBenchmark  # noqa: PLC0415
+
+        return SnapshotBenchmark(
+            cold_s=[boot + prepare],
+            forked_s=[forked],
+            cold_boot_s=[boot],
+            prepare_s=[prepare],
+            tasks=tasks,
+        )
+
+    def test_expensive_preparation_makes_snapshots_worth_it(self):
+        bench = self._bench(boot=2.0, prepare=60.0, forked=10.0)
+        self.assertTrue(bench.worth_it)
+        self.assertAlmostEqual(bench.saving_per_sandbox_s, 52.0)
+        self.assertIn("USE SNAPSHOTS", bench.render())
+
+    def test_cheap_preparation_makes_them_a_pessimisation(self):
+        """The shape of the first real measurement: 3.4s cold, 10.4s forked."""
+        bench = self._bench(boot=1.3, prepare=2.1, forked=10.4)
+        self.assertFalse(bench.worth_it)
+        rendered = bench.render()
+        self.assertIn("SKIP SNAPSHOTS", rendered)
+        self.assertIn("--snapshot", rendered)
+        # It must quantify the cost of the wrong choice, not just discourage it.
+        self.assertIn("6-task suite", rendered)
+
+    def test_it_reports_the_breakeven_preparation_cost(self):
+        bench = self._bench(boot=1.3, prepare=2.1, forked=10.4)
+        self.assertAlmostEqual(bench.restore_penalty_s, 9.1, places=5)
+        self.assertAlmostEqual(bench.breakeven_prepare_s, 9.1, places=5)
+
+    def test_breakeven_is_never_negative(self):
+        bench = self._bench(boot=5.0, prepare=1.0, forked=2.0)
+        self.assertGreaterEqual(bench.breakeven_prepare_s, 0.0)
+
+    def test_every_sample_is_reported_not_just_the_median(self):
+        from agent_eval.environment import SnapshotBenchmark  # noqa: PLC0415
+
+        bench = SnapshotBenchmark(
+            cold_s=[3.0, 4.0, 5.0],
+            forked_s=[9.0, 10.0, 30.0],
+            cold_boot_s=[1.0, 1.0, 1.0],
+            prepare_s=[2.0, 3.0, 4.0],
+        )
+        rendered = bench.render()
+        # A single slow outlier is visible rather than hidden by the median.
+        self.assertIn("30.0", rendered)
+        self.assertEqual(bench.forked_median_s, 10.0)
+
+
+class TestSnapshotIsOptIn(unittest.TestCase):
+    def test_default_run_does_not_use_a_snapshot(self):
+        from agent_eval.cli import build_parser  # noqa: PLC0415
+
+        args = build_parser().parse_args([])
+        self.assertFalse(args.snapshot, "snapshots must be opt-in")

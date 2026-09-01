@@ -279,10 +279,43 @@ being caught.
   `workflow_dispatch` only appears once the workflow is on the default branch.
 - `SOLARI_API_KEY` is a repository **secret**. Never a variable.
 
+## Phase 3 result: snapshots did not pay off, and that is the finding
+
+Measured on the free tier: booting `base` and running the preparation reached
+ready in **3.4s**; forking the snapshot took **10.4s**. Snapshot restore is
+~3x slower than a template boot here, so using it would have cost the 6-task
+suite ~42s a run.
+
+Do not frame snapshots as "this is why it's cheap enough to run on every PR" —
+the measurement says otherwise, and the pitch has to follow the data. The
+honest framing is that the harness *measures the tradeoff for your
+environment*:
+
+- snapshots are **opt-in** (`--snapshot`), not the default
+- `--bench-snapshot N` reports boot / preparation / restore separately and
+  prints USE SNAPSHOTS or SKIP SNAPSHOTS with the breakeven number
+- snapshot restore has a fixed cost; the preparation must exceed it to win.
+  The reference `tasks/_environment.py` (pip install pytest) is too cheap —
+  likely already present in `base`. Cloning a repo and installing real
+  dependencies is the case where forking wins.
+
+This is a better story than "snapshots are fast", and it is a real datapoint
+about a workload Solari is not yet visible in.
+
+## Verified live, second run (2026-09-01, 1-month promo tier)
+
+The complete self-test, both directions, no errors:
+
+- `agent-eval --parallel 4` -> **6/6 passed**, wall 69.7s vs 167.0s summed
+- `agent-eval --agent sabotage --expect fail --parallel 4` -> **0/6 passed,
+  6 failed, 0 errored**, exit 0
+- The adaptive limiter asked for 4, settled at 2, and lost no tasks — the
+  ConcurrencyLimitError failures from the first run are gone.
+- Per-task latency (correct): csv 17.9s, json 19.8s, log_cleanup 40.8s,
+  secret_leak 50.2s, stack_trace 18.8s, test_suite 19.5s.
+
 ## Next
 
-Phase 3 — snapshots and templates: build the prepared environment once,
-snapshot it, fork per task. Frame as "this is why it's cheap enough to run on
-every PR", with real before/after cold-start numbers. Phase 4 — README leading
-with a caught regression, architecture diagram, real latency and pass rates,
-and a "how to add a task" section.
+Phase 4 — README leading with a caught regression, architecture diagram, real
+latency and pass rates, the snapshot tradeoff as measured, and a "how to add a
+task" section.
