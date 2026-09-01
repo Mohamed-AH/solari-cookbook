@@ -33,6 +33,12 @@ past. Copy one into your project and change the parts you care about.
 | --- | --- | --- |
 | [desktop-computer-use-py](examples/desktop-computer-use-py) | Python | Screenshot, click, and type on a Linux GUI |
 
+## Beyond the examples
+
+| Project | Language | What it is |
+| --- | --- | --- |
+| [agent-eval](agent-eval) | Python | Execution-based regression testing for LLM agents — point it at your own agent, with your own tasks, in your own CI |
+
 ## Running an example
 
 Each directory is self-contained.
