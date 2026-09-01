@@ -19,7 +19,7 @@ from __future__ import annotations
 import hashlib
 import inspect
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
@@ -151,10 +151,18 @@ async def ensure_prepared(
 
 @dataclass
 class SnapshotBenchmark:
-    """Cost of getting one task-ready sandbox, prepared vs from scratch."""
+    """Cost of getting one task-ready sandbox, prepared vs from scratch.
+
+    Broken down rather than totalled, because the totals alone cannot tell you
+    whether a snapshot is worth using. Two numbers decide that: what your
+    preparation costs, and what restoring a snapshot costs instead of booting
+    the plain template. Snapshots win only when the first exceeds the second.
+    """
 
     cold_s: list[float]
     forked_s: list[float]
+    cold_boot_s: list[float] = field(default_factory=list)
+    prepare_s: list[float] = field(default_factory=list)
     tasks: int = 0
 
     @staticmethod
@@ -176,6 +184,28 @@ class SnapshotBenchmark:
         return self._median(self.forked_s)
 
     @property
+    def prepare_median_s(self) -> float:
+        return self._median(self.prepare_s)
+
+    @property
+    def cold_boot_median_s(self) -> float:
+        return self._median(self.cold_boot_s)
+
+    @property
+    def restore_penalty_s(self) -> float:
+        """What restoring a snapshot costs over booting the plain template."""
+        return self.forked_median_s - self.cold_boot_median_s
+
+    @property
+    def worth_it(self) -> bool:
+        return self.saving_per_sandbox_s > 0
+
+    @property
+    def breakeven_prepare_s(self) -> float:
+        """How expensive your preparation must be before snapshots pay off."""
+        return max(0.0, self.restore_penalty_s)
+
+    @property
     def saving_per_sandbox_s(self) -> float:
         return self.cold_median_s - self.forked_median_s
 
@@ -188,28 +218,67 @@ class SnapshotBenchmark:
             "samples": len(self.cold_s),
             "cold_s": [round(v, 2) for v in self.cold_s],
             "forked_s": [round(v, 2) for v in self.forked_s],
+            "cold_boot_s": [round(v, 2) for v in self.cold_boot_s],
+            "prepare_s": [round(v, 2) for v in self.prepare_s],
             "cold_median_s": round(self.cold_median_s, 2),
             "forked_median_s": round(self.forked_median_s, 2),
+            "cold_boot_median_s": round(self.cold_boot_median_s, 2),
+            "prepare_median_s": round(self.prepare_median_s, 2),
+            "restore_penalty_s": round(self.restore_penalty_s, 2),
+            "breakeven_prepare_s": round(self.breakeven_prepare_s, 2),
+            "worth_it": self.worth_it,
             "saving_per_sandbox_s": round(self.saving_per_sandbox_s, 2),
             "speedup": round(self.speedup, 2),
             "tasks": self.tasks,
             "saving_per_suite_s": round(self.saving_per_sandbox_s * self.tasks, 2),
         }
 
+    @staticmethod
+    def _samples(values: list[float]) -> str:
+        return ", ".join(f"{v:.1f}" for v in values) or "—"
+
     def render(self) -> str:
         lines = [
             "",
             f"snapshot benchmark — {len(self.cold_s)} sample(s) each",
             "=" * 72,
-            f"  from template + prepare : {self.cold_median_s:6.1f}s  (median)",
-            f"  forked from snapshot    : {self.forked_median_s:6.1f}s  (median)",
+            f"  boot the plain template : {self.cold_boot_median_s:6.1f}s   "
+            f"[{self._samples(self.cold_boot_s)}]",
+            f"  + run your preparation  : {self.prepare_median_s:6.1f}s   "
+            f"[{self._samples(self.prepare_s)}]",
+            f"  = ready, no snapshot    : {self.cold_median_s:6.1f}s",
+            "",
+            f"  restore a snapshot      : {self.forked_median_s:6.1f}s   "
+            f"[{self._samples(self.forked_s)}]",
             "=" * 72,
-            f"  {self.saving_per_sandbox_s:.1f}s saved per sandbox, {self.speedup:.1f}x faster to ready",
         ]
-        if self.tasks:
+        if self.worth_it:
             lines.append(
-                f"  across a {self.tasks}-task suite that is "
-                f"{self.saving_per_sandbox_s * self.tasks:.1f}s a run"
+                f"  USE SNAPSHOTS: {self.saving_per_sandbox_s:.1f}s saved per sandbox"
+                f" ({self.speedup:.1f}x faster to ready)"
+            )
+            if self.tasks:
+                lines.append(
+                    f"  across a {self.tasks}-task suite that is "
+                    f"{self.saving_per_sandbox_s * self.tasks:.1f}s a run"
+                )
+        else:
+            lines.append(
+                f"  SKIP SNAPSHOTS: restoring one costs "
+                f"{self.restore_penalty_s:.1f}s more than booting the template,"
+            )
+            lines.append(
+                f"  and your preparation only costs {self.prepare_median_s:.1f}s. "
+                f"Run without --snapshot."
+            )
+            if self.tasks:
+                lines.append(
+                    f"  Using them would cost this {self.tasks}-task suite "
+                    f"{-self.saving_per_sandbox_s * self.tasks:.1f}s a run."
+                )
+            lines.append(
+                f"  Snapshots start paying off once your preparation exceeds "
+                f"~{self.breakeven_prepare_s:.0f}s."
             )
         lines.append("")
         return "\n".join(lines)
@@ -231,16 +300,27 @@ async def benchmark_snapshot(
     path pays for the preparation every time; the forked path paid once.
     """
     cold: list[float] = []
+    cold_boot: list[float] = []
+    prepare: list[float] = []
     forked: list[float] = []
 
     for _ in range(samples):
         started = time.monotonic()
         async with sandbox_session(client, template=template) as sandbox:
+            booted = time.monotonic()
+            cold_boot.append(booted - started)
             await environment.prepare(sandbox)
             cold.append(time.monotonic() - started)
+            prepare.append(time.monotonic() - booted)
 
         started = time.monotonic()
         async with sandbox_session(client, from_snapshot=prepared.snapshot_id):
             forked.append(time.monotonic() - started)
 
-    return SnapshotBenchmark(cold_s=cold, forked_s=forked, tasks=tasks)
+    return SnapshotBenchmark(
+        cold_s=cold,
+        forked_s=forked,
+        cold_boot_s=cold_boot,
+        prepare_s=prepare,
+        tasks=tasks,
+    )
