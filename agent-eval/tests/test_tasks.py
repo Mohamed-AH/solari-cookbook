@@ -80,23 +80,38 @@ class TestPromptHygiene(unittest.TestCase):
             if line.strip().startswith("assert"):
                 self.assertNotIn(line.strip(), prompt, "a hidden test leaked into the prompt")
 
-    def test_solvers_receive_only_the_prompt_string(self):
-        """Structural guarantee: a solver cannot reach the fixture."""
+    def test_agents_see_only_observations(self):
+        """Structural guarantee: an agent cannot reach the fixture.
+
+        `next_action` takes one argument — an Observation carrying the prompt
+        and the agent's own results. There is no parameter through which a
+        task, a fixture or an expected answer could arrive.
+        """
         for task in self.tasks.values():
-            for name, solver in task.solvers.items():
-                params = list(inspect.signature(solver).parameters)
+            for name, factory in task.agents.items():
+                agent = factory()
+                params = list(inspect.signature(agent.next_action).parameters)
                 self.assertEqual(
                     len(params),
-                    2,
-                    f"{task.id}:{name} takes {params}; a solver gets (sandbox, prompt) only",
+                    1,
+                    f"{task.id}:{name}.next_action takes {params}; it gets an Observation only",
                 )
+
+    def test_reference_agents_do_not_embed_the_expected_answer(self):
+        """A reference agent that hardcoded the answer would fake a pass."""
+        import csv_error_rate  # noqa: PLC0415
+
+        source = Path(csv_error_rate.__file__).read_text(encoding="utf-8")
+        agents_section = source[source.index("# -- reference agents"):]
+        self.assertNotIn("0.15", agents_section)
+        self.assertNotIn("0.1500", agents_section)
 
 
 class TestReportBookkeeping(unittest.TestCase):
     def _report(self, *statuses: str) -> RunReport:
-        report = RunReport(started_at="t", solver="correct")
+        report = RunReport(started_at="t", agent="correct")
         report.results = [
-            TaskResult(task_id=f"t{i}", solver="correct", status=s, duration_s=1.0)
+            TaskResult(task_id=f"t{i}", agent="correct", status=s, duration_s=1.0)
             for i, s in enumerate(statuses)
         ]
         return report
