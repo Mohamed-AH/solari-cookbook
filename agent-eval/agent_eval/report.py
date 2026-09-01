@@ -21,13 +21,16 @@ class TaskResult:
     """The outcome of one task attempt."""
 
     task_id: str
-    solver: str
+    agent: str
     status: str
     checks: list[CheckResult] = field(default_factory=list)
     duration_s: float = 0.0
     sandbox_id: str = ""
     error: str | None = None
+    stop_reason: str = ""
+    steps: int = 0
     trajectory: list[dict[str, Any]] = field(default_factory=list)
+    stages: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def passed(self) -> bool:
@@ -36,13 +39,16 @@ class TaskResult:
     def to_dict(self) -> dict[str, Any]:
         return {
             "task_id": self.task_id,
-            "solver": self.solver,
+            "agent": self.agent,
             "status": self.status,
             "duration_s": round(self.duration_s, 2),
             "sandbox_id": self.sandbox_id,
             "error": self.error,
+            "stop_reason": self.stop_reason,
+            "steps": self.steps,
             "checks": [c.to_dict() for c in self.checks],
             "trajectory": self.trajectory,
+            "stages": self.stages,
         }
 
 
@@ -53,7 +59,7 @@ class RunReport:
     results: list[TaskResult] = field(default_factory=list)
     wall_clock_s: float = 0.0
     started_at: str = ""
-    solver: str = ""
+    agent: str = ""
 
     @property
     def summed_latency_s(self) -> float:
@@ -84,7 +90,7 @@ class RunReport:
         """Exit code for the expected outcome.
 
         `expect="fail"` is how the harness tests itself: run the sabotage
-        solvers and require every task to fail. A suite that cannot go red is
+        agents and require every task to fail. A suite that cannot go red is
         not measuring anything, so "everything failed" is the success
         condition there. An ERROR is never success under either expectation.
         """
@@ -98,7 +104,7 @@ class RunReport:
         return {
             "schema": "agent-eval/v1",
             "started_at": self.started_at,
-            "solver": self.solver,
+            "agent": self.agent,
             "python": platform.python_version(),
             "summary": {
                 "total": len(self.results),
@@ -128,12 +134,13 @@ def render(report: RunReport, *, verbose: bool = False) -> str:
     """Render a run as terminal text. Failing checks always show their detail."""
     lines: list[str] = []
     lines.append("")
-    lines.append(f"agent-eval — solver={report.solver}  started={report.started_at}")
+    lines.append(f"agent-eval — agent={report.agent}  started={report.started_at}")
     lines.append("=" * 72)
 
     for result in report.results:
         mark = _MARK.get(result.status, result.status)
-        lines.append(f"[{mark}] {result.task_id}  ({result.duration_s:.1f}s)")
+        steps_note = f", {result.steps} steps, {result.stop_reason}" if result.steps else ""
+        lines.append(f"[{mark}] {result.task_id}  ({result.duration_s:.1f}s{steps_note})")
         if result.error:
             lines.append(f"       error: {result.error}")
         for check in result.checks:

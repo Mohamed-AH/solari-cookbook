@@ -2,17 +2,17 @@
 
 A task is four separable things:
 
-  prompt   the only text a solver is ever given
+  prompt   the only text an agent is ever given
   setup    builds the fixture inside a fresh sandbox
   check    decides pass/fail from the machine's end state
-  solvers  scripted reference implementations, used to test the harness itself
+  agents   reference implementations, used to test the harness itself
 
 The separation between `prompt` and `setup` is the point, not an accident.
 Fixture contents must never reach the model: hand an agent the setup commands
 "for context" and it can emit the expected answer without ever reading the
 file, and the task silently stops measuring anything. That is enforced
-structurally here — a solver is called with `task.prompt`, a plain string, and
-never with the task object.
+structurally — an agent is handed an Observation carrying `task.prompt` and
+the results of its own actions, never the task object.
 """
 
 from __future__ import annotations
@@ -22,11 +22,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
+from .agent import Agent
 from .assertions import Checker
 
 SetupFn = Callable[[Any], Awaitable[None]]
 CheckFn = Callable[[Checker], Awaitable[None]]
-SolverFn = Callable[[Any, str], Awaitable[None]]
+AgentFactory = Callable[[], Agent]
 
 TASKS_DIR = Path(__file__).resolve().parent.parent / "tasks"
 
@@ -40,10 +41,14 @@ class Task:
     prompt: str
     setup: SetupFn
     check: CheckFn
-    solvers: dict[str, SolverFn] = field(default_factory=dict)
+    agents: dict[str, AgentFactory] = field(default_factory=dict)
     template: str = "base"
     timeout_ms: int = 5 * 60_000
     max_steps: int = 8
+    # Tools this task needs beyond the ones every assertion uses. Checked
+    # before the agent runs, so a missing binary is an ERROR about the image
+    # rather than a FAIL blamed on the agent.
+    required_tools: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.id:
