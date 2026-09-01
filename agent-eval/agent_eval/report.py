@@ -62,6 +62,7 @@ class RunReport:
     agent: str = ""
     parallel: int = 1
     concurrency_ceiling: int = 0
+    environment: dict[str, Any] | None = None
 
     @property
     def summed_latency_s(self) -> float:
@@ -119,6 +120,7 @@ class RunReport:
             "python": platform.python_version(),
             "parallel": self.parallel,
             "concurrency_ceiling": self.concurrency_ceiling,
+            "environment": self.environment,
             "summary": {
                 "total": len(self.results),
                 "passed": self.passed,

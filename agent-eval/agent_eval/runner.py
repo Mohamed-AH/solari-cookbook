@@ -25,6 +25,7 @@ from .agent import run_agent_loop
 from .assertions import REQUIRED_TOOLS, Checker, preflight
 from .builtins import known_agents, resolve_agent
 from .concurrency import AdaptiveLimiter
+from .environment import PreparedEnvironment
 from .report import ERROR, FAIL, PASS, RunReport, TaskResult, now_iso
 from .sandbox import sandbox_session
 from .task import Task
@@ -35,7 +36,11 @@ def _describe(exc: BaseException) -> str:
 
 
 async def run_task(
-    client: Any, task: Task, agent_name: str, on_busy: Any = None
+    client: Any,
+    task: Task,
+    agent_name: str,
+    on_busy: Any = None,
+    prepared: PreparedEnvironment | None = None,
 ) -> TaskResult:
     """Run one task attempt in its own sandbox and score it."""
     factory = resolve_agent(task, agent_name)
@@ -61,6 +66,9 @@ async def run_task(
             client,
             template=task.template,
             timeout_ms=task.timeout_ms,
+            # Forking a prepared snapshot skips the setup this task would
+            # otherwise repeat; without one it boots the plain template.
+            from_snapshot=prepared.snapshot_id if prepared else None,
             metadata={"agent_eval_task": task.id, "agent_eval_agent": agent_name},
             on_busy=on_busy,
         ) as sandbox:
@@ -123,7 +131,12 @@ async def run_task(
 
 
 async def run_suite(
-    client: Any, tasks: list[Task], agent_name: str, *, parallel: int = 1
+    client: Any,
+    tasks: list[Task],
+    agent_name: str,
+    *,
+    parallel: int = 1,
+    prepared: PreparedEnvironment | None = None,
 ) -> RunReport:
     """Run every task, at most `parallel` sandboxes at a time.
 
@@ -140,18 +153,20 @@ async def run_suite(
         raise ValueError(f"parallel must be at least 1, got {parallel}")
 
     report = RunReport(started_at=now_iso(), agent=agent_name, parallel=parallel)
+    if prepared:
+        report.environment = prepared.to_dict()
     wall = time.monotonic()
 
     if parallel == 1:
         for task in tasks:
-            report.results.append(await run_task(client, task, agent_name))
+            report.results.append(await run_task(client, task, agent_name, prepared=prepared))
         report.concurrency_ceiling = 1
     else:
         limiter = AdaptiveLimiter(parallel)
 
         async def guarded(task: Task) -> TaskResult:
             async with limiter.slot():
-                return await run_task(client, task, agent_name, limiter.shrink)
+                return await run_task(client, task, agent_name, limiter.shrink, prepared)
 
         report.results = list(await asyncio.gather(*(guarded(t) for t in tasks)))
         report.concurrency_ceiling = limiter.limit

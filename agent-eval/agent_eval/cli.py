@@ -12,10 +12,12 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import sys
 from pathlib import Path
 
 from .config import MissingApiKey, load_dotenv
+from .environment import benchmark_snapshot, ensure_prepared, load_environment
 from .report import render, render_markdown
 from .runner import run_suite
 from .sandbox import make_client
@@ -90,6 +92,26 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         help="directory to load tasks from (default: ./tasks, else the bundled tasks)",
     )
+    parser.add_argument(
+        "--no-snapshot",
+        action="store_true",
+        help=(
+            "boot every task from the plain template instead of forking a "
+            "prepared snapshot (slower; useful as a baseline)"
+        ),
+    )
+    parser.add_argument(
+        "--rebuild-snapshot",
+        action="store_true",
+        help="rebuild the prepared environment even if a matching snapshot exists",
+    )
+    parser.add_argument(
+        "--bench-snapshot",
+        type=int,
+        default=0,
+        metavar="N",
+        help="measure prepared-vs-cold sandbox start over N samples, then exit",
+    )
     parser.add_argument("--list", action="store_true", help="list tasks and exit")
     parser.add_argument("-v", "--verbose", action="store_true", help="show passing checks too")
     return parser
@@ -111,13 +133,51 @@ async def _run(args: argparse.Namespace) -> int:
         return 2
 
     concurrency = "one at a time" if args.parallel == 1 else f"{args.parallel} at a time"
-    print(
-        f"running {len(tasks)} task(s) from {tasks_dir} with agent={args.agent}, "
-        f"{concurrency}, expecting every task to {args.expect}"
-    )
+    environment = load_environment(tasks_dir)
 
     async with make_client() as client:
-        report = await run_suite(client, tasks, args.agent, parallel=args.parallel)
+        prepared = None
+        if environment and not args.no_snapshot:
+            what = environment.description or "the prepared environment"
+            print(f"preparing the environment ({what})...")
+            prepared = await ensure_prepared(
+                client, environment, rebuild=args.rebuild_snapshot
+            )
+            if prepared.built:
+                print(
+                    f"built snapshot {prepared.name} in {prepared.build_s:.1f}s "
+                    f"— later runs reuse it"
+                )
+            else:
+                print(f"reusing snapshot {prepared.name} (nothing to build)")
+
+        if args.bench_snapshot:
+            if not environment:
+                print(
+                    f"error: no {tasks_dir / '_environment.py'} to benchmark",
+                    file=sys.stderr,
+                )
+                return 2
+            if prepared is None:
+                prepared = await ensure_prepared(client, environment)
+            bench = await benchmark_snapshot(
+                client, environment, prepared, samples=args.bench_snapshot, tasks=len(tasks)
+            )
+            print(bench.render())
+            if args.output:
+                Path(args.output).write_text(
+                    json.dumps(bench.to_dict(), indent=2) + "\n", encoding="utf-8"
+                )
+                print(f"benchmark written to {args.output}")
+            return 0
+
+        print(
+            f"running {len(tasks)} task(s) from {tasks_dir} with agent={args.agent}, "
+            f"{concurrency}, expecting every task to {args.expect}"
+        )
+        report = await run_suite(
+            client, tasks, args.agent, parallel=args.parallel, prepared=prepared
+        )
 
     print(render(report, verbose=args.verbose))
 
