@@ -352,3 +352,98 @@ class TestUnavailableAgentIsNotBlamed(unittest.TestCase):
         task = self._task_with(TASKS[0], lambda: DiesAfterSucceeding())
         result = self._run(task, "flaky")
         self.assertEqual(result.status, "PASS", "a late outage undid a completed task")
+
+
+class TestRecoverableSandboxErrors(unittest.TestCase):
+    """A mistyped command is an observation, not the end of the run.
+
+    Regression from a live Gemini run: the model typed `python33`, the sandbox
+    raised ActionError, and the harness ended the attempt on step 2 of 8. A
+    real agent should see "not found" and try again — recovering from that is
+    half of what the suite is meant to measure.
+    """
+
+    def _sandbox_that_rejects(self, tmp):
+        from solari_sandbox import ActionError  # noqa: PLC0415
+
+        from local_sandbox import LocalSandbox  # noqa: PLC0415
+
+        sandbox = LocalSandbox(Path(tmp))
+        original = sandbox.commands.run
+
+        async def run(cmd, **kwargs):
+            if cmd == "python33":
+                raise ActionError("commands.run", 'exec: "python33": executable file not found')
+            return await original(cmd, **kwargs)
+
+        sandbox.commands.run = run
+        return sandbox
+
+    def test_a_missing_binary_comes_back_as_a_failed_result(self):
+        from agent_eval.agent import execute, run  # noqa: PLC0415
+
+        async def go():
+            with tempfile.TemporaryDirectory() as tmp:
+                sandbox = self._sandbox_that_rejects(tmp)
+                return await execute(sandbox, run("python33", ["x.py"]))
+
+        result = asyncio.run(go())
+        self.assertFalse(result.ok)
+        self.assertEqual(result.exit_code, 127)
+        self.assertIn("python33", result.stderr)
+        self.assertIn("python33", result.render())
+
+    def test_the_agent_can_recover_and_the_run_continues(self):
+        from agent_eval.agent import Observation, finish, run, run_agent_loop  # noqa: PLC0415
+
+        class Typos:
+            """Gets the name wrong once, reads the error, then gets it right."""
+
+            name = "typo"
+
+            async def next_action(self, obs: Observation):
+                if obs.last_action is None:
+                    return run("python33", ["-c", "print(1)"])
+                if obs.last_result and not obs.last_result.ok:
+                    return run("python3", ["-c", "print(1)"])
+                return finish("recovered")
+
+        async def go():
+            with tempfile.TemporaryDirectory() as tmp:
+                return await run_agent_loop(
+                    self._sandbox_that_rejects(tmp), Typos(), "do it", max_steps=6
+                )
+
+        agent_run = asyncio.run(go())
+        self.assertEqual(agent_run.stop_reason, "finished", agent_run.error)
+        self.assertEqual(len(agent_run.steps), 3)
+        self.assertEqual(agent_run.steps[0].result["exit_code"], 127)
+        self.assertTrue(agent_run.steps[1].result["ok"], "the retry did not succeed")
+
+    def test_losing_the_machine_is_still_a_harness_error(self):
+        """The distinction has to cut both ways."""
+        from solari_sandbox import ConnectionError as SolariConnectionError  # noqa: PLC0415
+
+        from agent_eval.agent import Observation, run, run_agent_loop  # noqa: PLC0415
+
+        class Dropped:
+            async def run(self, cmd, **kwargs):
+                raise SolariConnectionError("control channel closed")
+
+        class Always:
+            name = "always"
+
+            async def next_action(self, obs: Observation):
+                return run("python3", ["-c", "print(1)"])
+
+        async def go():
+            with tempfile.TemporaryDirectory() as tmp:
+                from local_sandbox import LocalSandbox  # noqa: PLC0415
+
+                sandbox = LocalSandbox(Path(tmp))
+                sandbox.commands = Dropped()
+                return await run_agent_loop(sandbox, Always(), "do it", max_steps=3)
+
+        agent_run = asyncio.run(go())
+        self.assertEqual(agent_run.stop_reason, "agent_error")
+        self.assertIn("ConnectionError", agent_run.error)
