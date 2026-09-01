@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agent-eval"
+version = "0.1.0"
+description = "Execution-based regression testing for LLM agents, on Solari sandboxes."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = ["solari-sandbox>=0.2.0"]
+
+[project.scripts]
+agent-eval = "agent_eval.cli:main"
+
+[tool.setuptools]
+packages = ["agent_eval"]

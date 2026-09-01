@@ -1,0 +1,100 @@
+"""Command line entry point.
+
+    agent-eval --list
+    agent-eval                              # run every task with the correct solver
+    agent-eval --tasks csv_error_rate
+    agent-eval --solver sabotage --expect fail    # the harness's own self-test
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import sys
+from pathlib import Path
+
+from .config import MissingApiKey, load_dotenv
+from .report import render
+from .runner import run_suite
+from .sandbox import make_client
+from .task import TaskLoadError, discover
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="agent-eval",
+        description="Execution-based regression testing for LLM agents.",
+    )
+    parser.add_argument(
+        "--tasks",
+        default="",
+        help="comma-separated task ids to run (default: every task in tasks/)",
+    )
+    parser.add_argument(
+        "--solver",
+        default="correct",
+        help="which solver to run (default: correct)",
+    )
+    parser.add_argument(
+        "--expect",
+        choices=("pass", "fail"),
+        default="pass",
+        help="expected outcome for every task; 'fail' is the harness self-test",
+    )
+    parser.add_argument(
+        "--output",
+        default="",
+        help="write the JSON report to this path (default: none)",
+    )
+    parser.add_argument(
+        "--tasks-dir",
+        default=str(PROJECT_ROOT / "tasks"),
+        help="directory to load tasks from",
+    )
+    parser.add_argument("--list", action="store_true", help="list tasks and exit")
+    parser.add_argument("-v", "--verbose", action="store_true", help="show passing checks too")
+    return parser
+
+
+async def _run(args: argparse.Namespace) -> int:
+    only = [t.strip() for t in args.tasks.split(",") if t.strip()]
+    tasks = discover(Path(args.tasks_dir), only=only or None)
+
+    if args.list:
+        for task in tasks:
+            solvers = ", ".join(sorted(task.solvers)) or "<none>"
+            print(f"{task.id}\n    {task.summary}\n    solvers: {solvers}")
+        return 0
+
+    print(f"running {len(tasks)} task(s) with solver={args.solver}, expecting every task to {args.expect}")
+
+    async with make_client() as client:
+        report = await run_suite(client, tasks, args.solver)
+
+    print(render(report, verbose=args.verbose))
+
+    if args.output:
+        path = Path(args.output)
+        report.write_json(path)
+        print(f"report written to {path}")
+
+    code = report.exit_code_for(args.expect)
+    if code == 0 and args.expect == "fail":
+        print("self-test OK: every task failed under the sabotage solver, as required.")
+    return code
+
+
+def main() -> int:
+    args = build_parser().parse_args()
+    load_dotenv(PROJECT_ROOT / ".env")
+    try:
+        return asyncio.run(_run(args))
+    except (MissingApiKey, TaskLoadError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
