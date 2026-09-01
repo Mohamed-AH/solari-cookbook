@@ -4,6 +4,7 @@
     agent-eval                              # run every task with the correct agent
     agent-eval --tasks csv_error_rate
     agent-eval --agent sabotage --expect fail      # the harness's own self-test
+    agent-eval --agent claude                     # the reference LLM agent
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ from .config import MissingApiKey, load_dotenv
 from .report import render
 from .runner import run_suite
 from .sandbox import make_client
+from .builtins import known_agents
 from .task import TaskLoadError, discover
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -76,7 +78,7 @@ async def _run(args: argparse.Namespace) -> int:
 
     if args.list:
         for task in tasks:
-            agents = ", ".join(sorted(task.agents)) or "<none>"
+            agents = ", ".join(known_agents(task))
             print(f"{task.id}\n    {task.summary}\n    agents: {agents}  max_steps: {task.max_steps}")
         return 0
 

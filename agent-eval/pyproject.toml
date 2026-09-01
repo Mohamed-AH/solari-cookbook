@@ -11,6 +11,10 @@ requires-python = ">=3.10"
 license = { text = "MIT" }
 dependencies = ["solari-sandbox>=0.2.0"]
 
+[project.optional-dependencies]
+# The reference Claude agent. The harness itself needs none of this.
+claude = ["anthropic>=0.40"]
+
 [project.scripts]
 agent-eval = "agent_eval.cli:main"
 
