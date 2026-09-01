@@ -382,7 +382,30 @@ Other observations from that run, worth keeping:
   the commit and then hit the limit on a later call.
 - `log_cleanup_precision` failed honestly — six steps, nothing deleted,
   `max_steps`. A real capability gap, not an infrastructure artifact, and the
-  kind of result the suite exists to produce.
+  kind of result the suite exists to produce. It passed on the next run; see
+  the `--repeat` finding below.
+- Four of six passes finished on `max_steps` rather than `finished`: the model
+  did the work and never called `finish`. Worth knowing before quoting step
+  counts as effort.
+
+## The finding that produced `--repeat`
+
+Two consecutive `--agent gemini` runs of the identical suite scored **4/6 then
+6/6**. `log_cleanup_precision` flipped with no code change touching it — pure
+model non-determinism.
+
+That exposed a gap between this project's thesis and its implementation: the
+README said "one manual try proves nothing, the only meaningful measurement is
+a rate", and the tool ran each task exactly once.
+
+`--repeat N` runs every task N times; the report gives per-task pass rates and
+names **flaky** tasks (passed on some attempts, failed on others), which is the
+single most useful line in a repeated run. `--min-pass-rate` gates CI on the
+rate. An ERROR still fails at any threshold — a loose gate must not launder a
+broken harness.
+
+Do not quote a single run's pass rate as an agent's score. Quote a rate across
+repeats, and say how many.
 
 ## Next
 

@@ -98,6 +98,40 @@ asserts both directions.
 
 A single task cold, start to verdict: **9.0s**.
 
+## One run is not a measurement
+
+The same Gemini agent, on the same six tasks, on consecutive runs:
+
+| task | run A | run B |
+| --- | --- | --- |
+| `csv_error_rate` | PASS | PASS |
+| `json_report_schema` | PASS | PASS |
+| `log_cleanup_precision` | **FAIL** | **PASS** |
+| `secret_leak_guard` | PASS | PASS |
+| `stack_trace_fix` | PASS | PASS |
+| `test_suite_integrity` | **FAIL** | **PASS** |
+| | **67%** | **100%** |
+
+Nothing changed between them. A single run would have reported either number
+with equal confidence, which is why the harness can repeat:
+
+```bash
+agent-eval --agent gemini --repeat 5 --min-pass-rate 0.8
+```
+
+```
+[3/3] csv_error_rate         (100%)
+[2/3] log_cleanup_precision   (67%)  <- FLAKY
+...
+flaky: log_cleanup_precision — passed on some attempts and failed on others
+16/18 attempts passed  (89%)
+```
+
+An agent that *sometimes* solves a task has not solved it. `--min-pass-rate`
+gates CI on a rate rather than a coin flip, which is what makes "did it get
+worse than last commit" answerable at all. An ERROR still fails the run at any
+threshold — a loose gate must not launder a broken harness.
+
 ## How it works
 
 ```mermaid

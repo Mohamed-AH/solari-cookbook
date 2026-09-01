@@ -75,6 +75,26 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--repeat",
+        type=int,
+        default=1,
+        metavar="N",
+        help=(
+            "run every task N times and report a pass rate. Agents are "
+            "non-deterministic; one attempt measures one roll of the dice"
+        ),
+    )
+    parser.add_argument(
+        "--min-pass-rate",
+        type=float,
+        default=1.0,
+        metavar="RATE",
+        help=(
+            "succeed if at least this fraction of attempts pass (default: 1.0). "
+            "Use with --repeat to gate CI on a rate rather than a single run"
+        ),
+    )
+    parser.add_argument(
         "--output",
         default="",
         help="write the JSON report to this path (default: none)",
@@ -175,10 +195,15 @@ async def _run(args: argparse.Namespace) -> int:
 
         print(
             f"running {len(tasks)} task(s) from {tasks_dir} with agent={args.agent}, "
-            f"{concurrency}, expecting every task to {args.expect}"
+            f"{concurrency}{repeats}, expecting every task to {args.expect}"
         )
         report = await run_suite(
-            client, tasks, args.agent, parallel=args.parallel, prepared=prepared
+            client,
+            tasks,
+            args.agent,
+            parallel=args.parallel,
+            repeat=args.repeat,
+            prepared=prepared,
         )
 
     print(render(report, verbose=args.verbose))
@@ -196,7 +221,7 @@ async def _run(args: argparse.Namespace) -> int:
             fh.write(render_markdown(report) + "\n")
         print(f"markdown summary written to {path}")
 
-    code = report.exit_code_for(args.expect)
+    code = report.exit_code_for(args.expect, min_pass_rate=args.min_pass_rate)
     if code == 0 and args.expect == "fail":
         print("self-test OK: every task failed under the sabotage agent, as required.")
     return code

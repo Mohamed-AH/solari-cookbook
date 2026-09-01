@@ -61,6 +61,7 @@ class RunReport:
     started_at: str = ""
     agent: str = ""
     parallel: int = 1
+    repeat: int = 1
     concurrency_ceiling: int = 0
     environment: dict[str, Any] | None = None
 
@@ -85,6 +86,35 @@ class RunReport:
         return self.passed / len(self.results) if self.results else 0.0
 
     @property
+    def attempts_by_task(self) -> "dict[str, list[TaskResult]]":
+        """Attempts grouped by task, in the order the tasks were requested."""
+        grouped: dict[str, list[TaskResult]] = {}
+        for result in self.results:
+            grouped.setdefault(result.task_id, []).append(result)
+        return grouped
+
+    @property
+    def task_pass_rates(self) -> "dict[str, float]":
+        return {
+            task_id: sum(1 for a in attempts if a.passed) / len(attempts)
+            for task_id, attempts in self.attempts_by_task.items()
+        }
+
+    @property
+    def flaky_tasks(self) -> list[str]:
+        """Tasks that both passed and failed across repeats.
+
+        The most useful line in a repeated run: an agent that sometimes solves
+        a task has not solved it, and a single run would have called it either
+        way with equal confidence.
+        """
+        return [
+            task_id
+            for task_id, rate in self.task_pass_rates.items()
+            if 0.0 < rate < 1.0
+        ]
+
+    @property
     def speedup(self) -> float:
         """Summed sandbox latency over wall clock.
 
@@ -98,7 +128,7 @@ class RunReport:
         """0 only when every task passed. Anything else is a red build."""
         return self.exit_code_for("pass")
 
-    def exit_code_for(self, expect: str) -> int:
+    def exit_code_for(self, expect: str, min_pass_rate: float = 1.0) -> int:
         """Exit code for the expected outcome.
 
         `expect="fail"` is how the harness tests itself: run the sabotage
@@ -110,7 +140,7 @@ class RunReport:
             return 1
         if expect == "fail":
             return 0 if self.passed == 0 else 1
-        return 0 if self.failed == 0 else 1
+        return 0 if self.pass_rate >= min_pass_rate else 1
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -119,6 +149,7 @@ class RunReport:
             "agent": self.agent,
             "python": platform.python_version(),
             "parallel": self.parallel,
+            "repeat": self.repeat,
             "concurrency_ceiling": self.concurrency_ceiling,
             "environment": self.environment,
             "summary": {
@@ -127,6 +158,8 @@ class RunReport:
                 "failed": self.failed,
                 "errored": self.errored,
                 "pass_rate": round(self.pass_rate, 4),
+                "task_pass_rates": {k: round(v, 4) for k, v in self.task_pass_rates.items()},
+                "flaky_tasks": self.flaky_tasks,
                 "wall_clock_s": round(self.wall_clock_s, 2),
                 "summed_latency_s": round(self.summed_latency_s, 2),
                 "speedup": round(self.speedup, 2),
@@ -156,10 +189,31 @@ def render(report: RunReport, *, verbose: bool = False) -> str:
     )
     lines.append("=" * 72)
 
+    if report.repeat > 1:
+        for task_id, attempts in report.attempts_by_task.items():
+            passed = sum(1 for a in attempts if a.passed)
+            errored = sum(1 for a in attempts if a.status == ERROR)
+            rate = passed / len(attempts)
+            flag = "  <- FLAKY" if 0.0 < rate < 1.0 else ""
+            note = f", {errored} errored" if errored else ""
+            lines.append(
+                f"[{passed}/{len(attempts)}] {task_id}  ({rate * 100:.0f}%{note}){flag}"
+            )
+        lines.append("-" * 72)
+
     for result in report.results:
+        # When repeating, the per-task rates above are the summary; showing
+        # every passing attempt buries the failures that matter.
+        if report.repeat > 1 and result.passed and not verbose:
+            continue
         mark = _MARK.get(result.status, result.status)
-        steps_note = f", {result.steps} steps, {result.stop_reason}" if result.steps else ""
-        lines.append(f"[{mark}] {result.task_id}  ({result.duration_s:.1f}s{steps_note})")
+        details = [f"{result.duration_s:.1f}s"]
+        if result.steps:
+            details.append(f"{result.steps} steps")
+        if result.stop_reason:
+            details.append(result.stop_reason)
+        steps_note = ""
+        lines.append(f"[{mark}] {result.task_id}  ({', '.join(details)})")
         if result.error:
             lines.append(f"       error: {result.error}")
         for check in result.checks:
@@ -175,8 +229,13 @@ def render(report: RunReport, *, verbose: bool = False) -> str:
                     lines.append(f"         stderr: {first}")
 
     lines.append("=" * 72)
+    if report.flaky_tasks:
+        lines.append(
+            f"flaky: {', '.join(report.flaky_tasks)} — passed on some attempts and "
+            f"failed on others"
+        )
     lines.append(
-        f"{report.passed}/{len(report.results)} passed"
+        f"{report.passed}/{len(report.results)} attempts passed"
         f"  ({report.pass_rate * 100:.0f}%)"
         f"  failed={report.failed} errored={report.errored}"
     )
