@@ -223,3 +223,94 @@ class TestMissingKey(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipUnless(HAS_SDK, "google-genai not installed")
+class TestRateLimitHandling(unittest.TestCase):
+    """Regression: a 429 was scored as a failing agent.
+
+    In the first live run the free tier's 15-requests-per-minute limit hit on
+    the agent's first call. Two tasks were reported FAIL with one step each —
+    a verdict on an agent that had not yet done anything.
+    """
+
+    def test_the_servers_own_retry_delay_is_parsed(self):
+        from agent_eval.gemini_agent import _retry_after_s  # noqa: PLC0415
+
+        real = (
+            "429 RESOURCE_EXHAUSTED. {'error': {'code': 429, 'message': 'You exceeded "
+            "your current quota. Please retry in 12.486266166s.', 'details': "
+            "[{'@type': 'type.googleapis.com/google.rpc.RetryInfo', 'retryDelay': '58s'}]}}"
+        )
+        self.assertEqual(_retry_after_s(real), 58.0)
+
+    def test_a_message_without_a_delay_falls_back(self):
+        from agent_eval.gemini_agent import _retry_after_s  # noqa: PLC0415
+
+        self.assertIsNone(_retry_after_s(Exception("500 internal error")))
+
+    def test_a_persistent_rate_limit_raises_agent_unavailable(self):
+        from google.genai import errors  # noqa: PLC0415
+
+        from agent_eval import gemini_agent as mod  # noqa: PLC0415
+        from agent_eval.agent import AgentUnavailable  # noqa: PLC0415
+
+        class AlwaysLimited:
+            requests: list = []
+
+            async def generate_content(self, **kwargs):
+                raise errors.ClientError(429, {"error": {"message": "quota"}})
+
+        agent = make_agent([])
+        agent._client.aio.models = AlwaysLimited()
+        saved = mod.RETRY_BACKOFF_S, mod.RETRY_MAX_WAIT_S
+        mod.RETRY_BACKOFF_S, mod.RETRY_MAX_WAIT_S = 0.001, 0.001
+        try:
+            with self.assertRaises(AgentUnavailable):
+                asyncio.run(agent.next_action(self._obs()))
+        finally:
+            mod.RETRY_BACKOFF_S, mod.RETRY_MAX_WAIT_S = saved
+
+    def test_it_recovers_when_the_limit_clears(self):
+        from google.genai import errors  # noqa: PLC0415
+
+        from agent_eval import gemini_agent as mod  # noqa: PLC0415
+
+        class LimitedOnce:
+            def __init__(self):
+                self.calls = 0
+
+            async def generate_content(self, **kwargs):
+                self.calls += 1
+                if self.calls == 1:
+                    raise errors.ClientError(429, {"error": {"message": "quota"}})
+                return FakeResponse(function_calls=[FakeCall("finish", {"summary": "ok"})])
+
+        agent = make_agent([])
+        agent._client.aio.models = LimitedOnce()
+        saved = mod.RETRY_BACKOFF_S, mod.RETRY_MAX_WAIT_S
+        mod.RETRY_BACKOFF_S, mod.RETRY_MAX_WAIT_S = 0.001, 0.001
+        try:
+            action = asyncio.run(agent.next_action(self._obs()))
+        finally:
+            mod.RETRY_BACKOFF_S, mod.RETRY_MAX_WAIT_S = saved
+        self.assertEqual(action.kind, "finish")
+
+    def test_a_non_transient_error_is_still_unavailable_not_a_verdict(self):
+        from google.genai import errors  # noqa: PLC0415
+
+        from agent_eval.agent import AgentUnavailable  # noqa: PLC0415
+
+        class BadKey:
+            async def generate_content(self, **kwargs):
+                raise errors.ClientError(403, {"error": {"message": "bad key"}})
+
+        agent = make_agent([])
+        agent._client.aio.models = BadKey()
+        with self.assertRaises(AgentUnavailable):
+            asyncio.run(agent.next_action(self._obs()))
+
+    def _obs(self):
+        return Observation(
+            step=0, max_steps=5, prompt="do something", workdir="/workspace"
+        )

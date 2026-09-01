@@ -118,6 +118,13 @@ async def run_task(
                 result.error = "check function recorded no assertions"
             elif agent_run.error:
                 result.error = f"agent raised: {agent_run.error}"
+
+            # An agent that never got to act cannot be said to have failed.
+            # If the end state is correct anyway it earned the pass; if not,
+            # this is an ERROR about the provider, not a verdict on the agent.
+            if agent_run.stop_reason == "agent_unavailable" and result.status == FAIL:
+                result.status = ERROR
+
             return result
 
     except Exception as exc:  # noqa: BLE001 - harness failure, reported loudly

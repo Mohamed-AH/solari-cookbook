@@ -21,14 +21,40 @@ rather the point.
 
 from __future__ import annotations
 
+import asyncio
 import os
+import random
+import re
+import sys
 from typing import Any
 
-from .agent import Action, Observation, finish
+from .agent import Action, AgentUnavailable, Observation, finish
 from .tool_surface import SYSTEM_PROMPT, TOOL_SPECS, to_action
 
 MODEL = os.environ.get("AGENT_EVAL_GEMINI_MODEL", "gemini-flash-lite-latest")
 API_KEY_ENVS = ("GEMINI_API_KEY", "GOOGLE_API_KEY")
+
+# The free tier allows 15 requests per minute per model. A six-task suite makes
+# roughly five calls per task, so a sequential run walks straight into it. The
+# API says how long to wait; honour that rather than guessing.
+RETRY_ATTEMPTS = 5
+RETRY_BACKOFF_S = 5.0
+RETRY_MAX_WAIT_S = 75.0
+
+_RETRY_DELAY_PATTERNS = (
+    re.compile(r"retryDelay['\"]?\s*:\s*['\"]?(\d+(?:\.\d+)?)s"),
+    re.compile(r"retry in (\d+(?:\.\d+)?)s"),
+)
+
+
+def _retry_after_s(exc: BaseException) -> float | None:
+    """Pull the server's own retry delay out of the error, if it gave one."""
+    text = str(exc)
+    for pattern in _RETRY_DELAY_PATTERNS:
+        match = pattern.search(text)
+        if match:
+            return float(match.group(1))
+    return None
 
 
 class MissingDependency(RuntimeError):
@@ -131,12 +157,38 @@ class GeminiAgent:
 
     async def _call_model(self) -> Any:
         errors = self._sdk_errors()
-        try:
-            return await self._client.aio.models.generate_content(
-                model=self._model, contents=self._history, config=self._config
-            )
-        except errors as exc:  # noqa: BLE001 - re-raised with context, never hidden
-            raise RuntimeError(f"Gemini API error: {type(exc).__name__}: {exc}") from exc
+        delay = RETRY_BACKOFF_S
+
+        for attempt in range(1, RETRY_ATTEMPTS + 1):
+            try:
+                return await self._client.aio.models.generate_content(
+                    model=self._model, contents=self._history, config=self._config
+                )
+            except errors as exc:  # noqa: PERF203 - retry loop, not a hot path
+                status = getattr(exc, "code", None)
+                transient = status == 429 or (isinstance(status, int) and status >= 500)
+                if not transient:
+                    raise AgentUnavailable(
+                        f"Gemini API error {status}: {exc}"
+                    ) from exc
+                if attempt == RETRY_ATTEMPTS:
+                    raise AgentUnavailable(
+                        f"Gemini still rate limited after {RETRY_ATTEMPTS} attempts: {exc}"
+                    ) from exc
+
+                # The server usually names its own delay; jitter it so several
+                # tasks refused at once do not retry in lockstep.
+                wait = _retry_after_s(exc) or delay
+                wait = min(wait, RETRY_MAX_WAIT_S) * (0.9 + 0.4 * random.random())
+                print(
+                    f"!! Gemini rate limited (attempt {attempt}/{RETRY_ATTEMPTS}); "
+                    f"waiting {wait:.0f}s",
+                    file=sys.stderr,
+                )
+                await asyncio.sleep(wait)
+                delay = min(delay * 2, RETRY_MAX_WAIT_S)
+
+        raise AssertionError("unreachable")  # pragma: no cover
 
     def _sdk_errors(self) -> tuple[type[BaseException], ...]:
         try:

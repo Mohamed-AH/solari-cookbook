@@ -342,14 +342,41 @@ Every claim in it is checked against the code: the 11 named assertions exist on
 `Checker`, every flag shown is in `--help`, and the task table matches the
 loaded tasks.
 
+## Verified live: a real model in the loop (Gemini free tier)
+
+`--agent gemini` ran the suite in real sandboxes and passed 4/6 — the first
+end-to-end proof that a real LLM agent, not a scripted one, works through the
+harness. It also found a genuine bug.
+
+**The bug: a provider rate limit was scored as a failing agent.** The free
+tier allows 15 requests/minute per model; a six-task run makes ~5 calls per
+task and walked straight into it. Two tasks were reported FAIL after **one
+step** with `429 RESOURCE_EXHAUSTED` — a verdict on an agent that had not yet
+done anything. Exactly the ERROR/FAIL confusion this project exists to
+prevent, in our own runner.
+
+Fixed with `AgentUnavailable` (in `agent.py`): raised when an agent cannot act
+for reasons outside the task — rate limit, outage, bad key. The loop records
+`stop_reason="agent_unavailable"` and the runner maps it to ERROR **only when
+the checks also failed**; if the end state is correct anyway the pass stands,
+because the end state is the measurement. Both agents raise it for transient
+failures, and the Gemini one first honours the retry delay the API returns.
+
+Other observations from that run, worth keeping:
+
+- `gemini-flash-lite-latest` resolves to `gemini-3.5-flash-lite`.
+- The model solved `csv_error_rate` but never called `finish`, hitting
+  `max_steps` — recorded as `stop_reason=max_steps`, which is the loop doing
+  its job.
+- A PASS can legitimately carry an `agent_error`: `secret_leak_guard` finished
+  the commit and then hit the limit on a later call.
+
 ## Next
 
 Nothing blocking. Remaining polish, in rough priority order:
 
-1. Run the suite with `--agent gemini` (free tier, `GEMINI_API_KEY`) or
-   `--agent claude` (`ANTHROPIC_API_KEY`). Neither reference LLM agent has
-   touched a live API yet — both are covered only by stubbed tests. Gemini is
-   the cheaper first move.
+1. `--agent claude` still has not touched a live API (`ANTHROPIC_API_KEY`);
+   Gemini has, and works.
 
    Both build their tool definitions from `agent_eval/tool_surface.py`; adding
    the second provider required no change to the action set, which is the
