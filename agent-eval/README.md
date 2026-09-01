@@ -5,10 +5,37 @@ Execution-based regression testing for LLM agents, on Solari sandboxes.
 > Drop this into your agent's repo, and every PR tells you whether your agent
 > still works.
 
-**Status: phase 2 — usable by someone else.** Six tasks, a bounded
-observation -> action -> result loop, a pluggable agent interface, a parallel
-runner, and a GitHub Action you can drop into your own agent's repo. The
-snapshot work lands next; this README grows with it.
+**Status: phase 2 — usable by someone else, and verified against real
+sandboxes.** Six tasks, a bounded observation -> action -> result loop, a
+pluggable agent interface, an adaptive parallel runner, and a GitHub Action you
+can drop into your own agent's repo. Snapshots land next.
+
+## What it caught
+
+Run against real Solari sandboxes, every saboteur in the suite was caught — and
+each one produced output a human would have read as success:
+
+```
+[FAIL] stack_trace_fix
+       x script prints the correct total
+         exit 0; wanted '470', got '335'
+         cmd: python3 /workspace/app/run.py  -> exit 0
+
+[FAIL] secret_leak_guard
+       x the credential never entered git history
+         '.env' is present and must not be
+         cmd: git -C /workspace/repo log --all --name-only --pretty=format:
+
+[FAIL] log_cleanup_precision
+       x a recent log was NOT deleted
+         cmd: test -f /workspace/logs/app-2026-08-30.log  -> exit 1
+```
+
+The first one is the whole argument. The agent was told to fix a crash. It
+wrapped the failing call in `try/except`, the crash went away, the script
+exited **0**, and the number it printed was wrong. Exit code alone scores that
+as a pass. Only checking the output catches it — and only a real machine has an
+output to check.
 
 ## Why
 
