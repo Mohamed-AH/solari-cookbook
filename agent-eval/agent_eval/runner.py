@@ -24,6 +24,7 @@ from typing import Any
 from .agent import run_agent_loop
 from .assertions import REQUIRED_TOOLS, Checker, preflight
 from .builtins import known_agents, resolve_agent
+from .concurrency import AdaptiveLimiter
 from .report import ERROR, FAIL, PASS, RunReport, TaskResult, now_iso
 from .sandbox import sandbox_session
 from .task import Task
@@ -33,7 +34,9 @@ def _describe(exc: BaseException) -> str:
     return f"{type(exc).__name__}: {exc}"
 
 
-async def run_task(client: Any, task: Task, agent_name: str) -> TaskResult:
+async def run_task(
+    client: Any, task: Task, agent_name: str, on_busy: Any = None
+) -> TaskResult:
     """Run one task attempt in its own sandbox and score it."""
     factory = resolve_agent(task, agent_name)
     if factory is None:
@@ -59,6 +62,7 @@ async def run_task(client: Any, task: Task, agent_name: str) -> TaskResult:
             template=task.template,
             timeout_ms=task.timeout_ms,
             metadata={"agent_eval_task": task.id, "agent_eval_agent": agent_name},
+            on_busy=on_busy,
         ) as sandbox:
             result.sandbox_id = sandbox.sandboxId
             stage("boot", boot, sandbox_id=sandbox.sandboxId)
@@ -123,10 +127,14 @@ async def run_suite(
 ) -> RunReport:
     """Run every task, at most `parallel` sandboxes at a time.
 
-    Bounded by a semaphore, not an unbounded gather: there is an account-level
-    concurrency cap, and firing every task at once would spend the run arguing
-    with it. Results are collected in task order however they finish, so two
-    runs of the same suite produce comparable reports.
+    `parallel` is a request, not a fact. Accounts have a concurrency ceiling
+    and it differs between them, so the limiter starts there and lowers itself
+    when the API says the account is full — the suite then runs at whatever
+    the account actually supports instead of failing tasks that were never
+    given a machine. The ceiling it settled on is recorded in the report.
+
+    Results are collected in task order however they finish, so two runs of
+    the same suite produce comparable reports.
     """
     if parallel < 1:
         raise ValueError(f"parallel must be at least 1, got {parallel}")
@@ -137,14 +145,16 @@ async def run_suite(
     if parallel == 1:
         for task in tasks:
             report.results.append(await run_task(client, task, agent_name))
+        report.concurrency_ceiling = 1
     else:
-        limit = asyncio.Semaphore(parallel)
+        limiter = AdaptiveLimiter(parallel)
 
         async def guarded(task: Task) -> TaskResult:
-            async with limit:
-                return await run_task(client, task, agent_name)
+            async with limiter.slot():
+                return await run_task(client, task, agent_name, limiter.shrink)
 
         report.results = list(await asyncio.gather(*(guarded(t) for t in tasks)))
+        report.concurrency_ceiling = limiter.limit
 
     report.wall_clock_s = time.monotonic() - wall
     return report

@@ -61,6 +61,7 @@ class RunReport:
     started_at: str = ""
     agent: str = ""
     parallel: int = 1
+    concurrency_ceiling: int = 0
 
     @property
     def summed_latency_s(self) -> float:
@@ -117,6 +118,7 @@ class RunReport:
             "agent": self.agent,
             "python": platform.python_version(),
             "parallel": self.parallel,
+            "concurrency_ceiling": self.concurrency_ceiling,
             "summary": {
                 "total": len(self.results),
                 "passed": self.passed,
@@ -181,7 +183,10 @@ def render(report: RunReport, *, verbose: bool = False) -> str:
         f"  |  summed sandbox latency {report.summed_latency_s:.1f}s"
     )
     if report.parallel > 1:
-        timing += f"  |  {report.speedup:.1f}x on {report.parallel} at a time"
+        ran_at = report.concurrency_ceiling or report.parallel
+        timing += f"  |  {report.speedup:.1f}x on {ran_at} at a time"
+        if ran_at < report.parallel:
+            timing += f" (asked for {report.parallel}; the account allowed {ran_at})"
     lines.append(timing)
     lines.append("")
     return "\n".join(lines)
