@@ -30,7 +30,8 @@ from agent_eval.agent import ActionResult, Observation  # noqa: E402
 
 if HAS_SDK:
     os.environ.setdefault("ANTHROPIC_API_KEY", "sk-ant-test-not-a-real-key")
-    from agent_eval.claude_agent import TOOLS, ClaudeAgent, _to_action  # noqa: E402
+    from agent_eval.claude_agent import TOOLS, ClaudeAgent  # noqa: E402
+    from agent_eval.tool_surface import to_action  # noqa: E402
 
 
 @dataclass
@@ -108,17 +109,17 @@ class TestToolSchemas(unittest.TestCase):
         self.assertEqual(sorted(samples), sorted(t["name"] for t in TOOLS))
         for name, payload in samples.items():
             with self.subTest(tool=name):
-                action = _to_action(name, payload)
+                action = to_action(name, payload)
                 self.assertIn(action.kind, ("run", "write", "read", "list", "finish"))
 
     def test_run_command_translation_keeps_argv_separate(self):
-        action = _to_action("run_command", {"cmd": "python3", "args": ["-c", "print(1)"]})
+        action = to_action("run_command", {"cmd": "python3", "args": ["-c", "print(1)"]})
         self.assertEqual(action.cmd, "python3")
         self.assertEqual(action.args, ("-c", "print(1)"))
 
     def test_unknown_tool_raises(self):
         with self.assertRaises(ValueError):
-            _to_action("rm_minus_rf", {})
+            to_action("rm_minus_rf", {})
 
 
 @unittest.skipUnless(HAS_SDK, "anthropic SDK not installed")

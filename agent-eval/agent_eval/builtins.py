@@ -14,7 +14,7 @@ from .task import Task
 
 AgentFactory = Callable[[], Any]
 
-BUILTIN_NAMES = ("claude",)
+BUILTIN_NAMES = ("claude", "gemini")
 
 
 def _claude_factory() -> Any:
@@ -25,7 +25,13 @@ def _claude_factory() -> Any:
     return ClaudeAgent()
 
 
-_BUILTINS: dict[str, AgentFactory] = {"claude": _claude_factory}
+def _gemini_factory() -> Any:
+    from .gemini_agent import GeminiAgent  # noqa: PLC0415
+
+    return GeminiAgent()
+
+
+_BUILTINS: dict[str, AgentFactory] = {"claude": _claude_factory, "gemini": _gemini_factory}
 
 
 class AgentImportError(RuntimeError):

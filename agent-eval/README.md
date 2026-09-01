@@ -208,8 +208,28 @@ harness at yours without editing any task:
 agent-eval --agent my_package.my_module:MyAgent
 ```
 
-`agent_eval/claude_agent.py` is a reference implementation in ~80 lines
-(`pip install -e '.[claude]'`, then `--agent claude`).
+Two reference implementations ship with it, on two providers:
+
+```bash
+pip install -e '.[gemini]' && export GEMINI_API_KEY=...      # free tier
+agent-eval --agent gemini
+
+pip install -e '.[claude]' && export ANTHROPIC_API_KEY=...
+agent-eval --agent claude
+```
+
+Both build their provider-specific tool definitions from one
+`agent_eval/tool_surface.py` and translate calls back through the same
+`to_action`. That is deliberate: if adding a second provider had required
+changing the action set, the abstraction would have been shaped around one
+vendor's SDK rather than around the machine. It isn't — the harness's actions,
+trajectory and scoring are identical between them, and only the adapter
+differs.
+
+Gemini's model defaults to `gemini-flash-lite-latest`
+(`AGENT_EVAL_GEMINI_MODEL` overrides it). A stronger model does better on the
+multi-observation tasks — and the harness tells you by how much, which is
+rather the point.
 
 ## In your CI
 
