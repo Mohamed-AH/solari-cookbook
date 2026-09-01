@@ -327,8 +327,25 @@ The complete self-test, both directions, no errors:
 - Per-task latency (correct): csv 17.9s, json 19.8s, log_cleanup 40.8s,
   secret_leak 50.2s, stack_trace 18.8s, test_suite 19.5s.
 
+## Phase 4: done
+
+`agent-eval/README.md` leads with the caught regression (335 instead of 470,
+exit 0), then the real numbers from the live runs, a mermaid architecture
+diagram whose dotted line is the prompt-only agent boundary, a "writing a task"
+section listing the rules the harness enforces, the CI drop-in, the measured
+snapshot crossover, and a "what this is not" section that states the prior art
+plainly rather than claiming novelty.
+
+Every claim in it is checked against the code: the 11 named assertions exist on
+`Checker`, every flag shown is in `--help`, and the task table matches the
+loaded tasks.
+
 ## Next
 
-Phase 4 — README leading with a caught regression, architecture diagram, real
-latency and pass rates, the snapshot tradeoff as measured, and a "how to add a
-task" section.
+Nothing blocking. Remaining polish, in rough priority order:
+
+1. Run the suite with `--agent claude` — the reference LLM agent has never
+   touched the live API, only stubbed tests. Needs `ANTHROPIC_API_KEY`.
+2. Enable Actions on the fork, add `SOLARI_API_KEY` as a repository secret,
+   and fire `agent-eval (live)` once so there is a green run to link to.
+3. Record the demo and post, tagging @harrychow_ and @getsolari.
