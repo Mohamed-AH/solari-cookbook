@@ -112,25 +112,47 @@ The same Gemini agent, on the same six tasks, on consecutive runs:
 | `test_suite_integrity` | **FAIL** | **PASS** |
 | | **67%** | **100%** |
 
-Nothing changed between them. A single run would have reported either number
-with equal confidence, which is why the harness can repeat:
+A single run reports either number with equal confidence. So the harness
+repeats:
 
 ```bash
-agent-eval --agent gemini --repeat 5 --min-pass-rate 0.8
+agent-eval --agent gemini --repeat 3 --min-pass-rate 0.8
 ```
 
 ```
 [3/3] csv_error_rate         (100%)
+[3/3] json_report_schema     (100%)
+[3/3] log_cleanup_precision  (100%)
+[3/3] secret_leak_guard      (100%)
+[3/3] stack_trace_fix        (100%)
+[3/3] test_suite_integrity   (100%)
+========================================================================
+18/18 attempts passed  (100%)  failed=0 errored=0
+wall clock 514.6s
+```
+
+**Read that honestly.** Eighteen attempts without a failure is not proof the
+agent is deterministic — it is eighteen attempts without a failure. And of the
+two failures in run A, one was a bug in *this harness*, not the agent: a
+mistyped command was being treated as fatal, so the attempt ended on step 2 of
+8. Only `log_cleanup_precision` flipped for reasons attributable to the model
+alone.
+
+That is the argument for repeating, not against it. The claim is not that three
+attempts is enough; it is that one is definitely not, and that a harness which
+reports a verdict from a single roll cannot tell you whether your agent got
+worse — which is the only question worth asking on a PR.
+
+When a task does flip, the report says so:
+
+```
 [2/3] log_cleanup_precision   (67%)  <- FLAKY
-...
 flaky: log_cleanup_precision — passed on some attempts and failed on others
-16/18 attempts passed  (89%)
 ```
 
 An agent that *sometimes* solves a task has not solved it. `--min-pass-rate`
-gates CI on a rate rather than a coin flip, which is what makes "did it get
-worse than last commit" answerable at all. An ERROR still fails the run at any
-threshold — a loose gate must not launder a broken harness.
+gates CI on the rate rather than on a coin flip. An ERROR still fails the run
+at any threshold — a loose gate must not launder a broken harness.
 
 ## How it works
 

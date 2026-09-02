@@ -407,6 +407,16 @@ broken harness.
 Do not quote a single run's pass rate as an agent's score. Quote a rate across
 repeats, and say how many.
 
+Measured with `--repeat 3`: **18/18 attempts passed**, wall clock 514.6s
+(sequential; most of that is waiting out the free tier's 15 req/min). State it
+as "18/18 at n=3", never as "Gemini is deterministic on this suite".
+
+Attribute the earlier instability correctly. Of run A's two failures, one
+(`test_suite_integrity`) was the ActionError bug in this harness, fixed since;
+only `log_cleanup_precision` flipped for reasons attributable to the model.
+Claiming the model was flaky where the harness was broken would be the same
+overclaim this project exists to catch.
+
 ## Next
 
 Nothing blocking. Remaining polish, in rough priority order:
