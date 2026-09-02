@@ -18,7 +18,7 @@ from pathlib import Path
 
 from .config import MissingApiKey, load_dotenv
 from .environment import benchmark_snapshot, ensure_prepared, load_environment
-from .report import render, render_markdown
+from .report import render, render_markdown, stream_line
 from .runner import run_suite
 from .sandbox import make_client
 from .builtins import AgentImportError, known_agents
@@ -205,6 +205,13 @@ async def _run(args: argparse.Namespace) -> int:
             f"running {len(tasks)} task(s) from {tasks_dir} with agent={args.agent}, "
             f"{concurrency}{repeats}, expecting every task to {args.expect}"
         )
+        width = max(len(t.id) for t in tasks)
+
+        def announce(result):
+            # flush: without it the lines buffer when stdout is piped or
+            # recorded, and the whole point is seeing them as they land.
+            print(stream_line(result, width), flush=True)
+
         report = await run_suite(
             client,
             tasks,
@@ -212,9 +219,10 @@ async def _run(args: argparse.Namespace) -> int:
             parallel=args.parallel,
             repeat=args.repeat,
             prepared=prepared,
+            on_result=announce,
         )
 
-    print(render(report, verbose=args.verbose))
+    print(render(report, verbose=args.verbose, streamed=True))
 
     if args.output:
         path = Path(args.output)

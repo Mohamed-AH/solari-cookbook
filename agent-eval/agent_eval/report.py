@@ -179,7 +179,26 @@ def now_iso() -> str:
 _MARK = {PASS: "PASS", FAIL: "FAIL", ERROR: "ERR "}
 
 
-def render(report: RunReport, *, verbose: bool = False) -> str:
+def stream_line(result: TaskResult, width: int = 0) -> str:
+    """One line for a task that just finished, printed while the run continues.
+
+    A six-task suite can sit for a minute on a slow sandbox boot. Printing only
+    at the end means the screen is blank for that whole time and then dumps
+    everything at once, which tells you nothing about what is happening.
+    """
+    mark = _MARK.get(result.status, result.status)
+    name = result.task_id.ljust(width)
+    if result.status == ERROR:
+        note = "harness error"
+    elif result.status == FAIL:
+        failed = sum(1 for c in result.checks if not c.passed)
+        note = f"{failed} of {len(result.checks)} checks failed"
+    else:
+        note = f"{result.steps} steps" if result.steps else ""
+    return f"[{mark}] {name}  {result.duration_s:5.1f}s  {note}".rstrip()
+
+
+def render(report: RunReport, *, verbose: bool = False, streamed: bool = False) -> str:
     """Render a run as terminal text. Failing checks always show their detail."""
     lines: list[str] = []
     lines.append("")
@@ -204,7 +223,8 @@ def render(report: RunReport, *, verbose: bool = False) -> str:
     for result in report.results:
         # When repeating, the per-task rates above are the summary; showing
         # every passing attempt buries the failures that matter.
-        if report.repeat > 1 and result.passed and not verbose:
+        # Already shown: streamed live, or summarised by the rates above.
+        if (streamed or report.repeat > 1) and result.passed and not verbose:
             continue
         mark = _MARK.get(result.status, result.status)
         details = [f"{result.duration_s:.1f}s"]

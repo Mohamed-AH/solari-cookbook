@@ -47,15 +47,17 @@ agent-eval --agent sabotage --expect fail    # prove the suite can go red
 
 ## Results
 
-Six tasks, six sandboxes:
+Results stream as each task lands, so a run in progress looks like this
+rather than a blank screen followed by a wall of text:
 
 ```
-[PASS] csv_error_rate        17.9s   3 steps
-[PASS] json_report_schema    19.8s   3 steps
-[PASS] log_cleanup_precision 40.8s   3 steps
-[PASS] secret_leak_guard     50.2s   5 steps
-[PASS] stack_trace_fix       18.8s   5 steps
-[PASS] test_suite_integrity  19.5s   5 steps
+[PASS] stack_trace_fix        18.8s  5 steps
+[PASS] csv_error_rate         17.9s  3 steps
+[PASS] json_report_schema     19.8s  3 steps
+[PASS] test_suite_integrity   19.5s  5 steps
+[PASS] log_cleanup_precision  40.8s  3 steps
+[PASS] secret_leak_guard      50.2s  5 steps
+
 6/6 passed  wall 69.7s | summed sandbox latency 167.0s | 2.4x on 2 at a time
 ```
 

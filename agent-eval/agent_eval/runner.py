@@ -145,6 +145,7 @@ async def run_suite(
     parallel: int = 1,
     repeat: int = 1,
     prepared: PreparedEnvironment | None = None,
+    on_result: Any = None,
 ) -> RunReport:
     """Run every task, at most `parallel` sandboxes at a time.
 
@@ -173,16 +174,26 @@ async def run_suite(
         report.environment = prepared.to_dict()
     wall = time.monotonic()
 
+    def announce(result: TaskResult) -> None:
+        if on_result is not None:
+            on_result(result)
+
     if parallel == 1:
         for task in attempts:
-            report.results.append(await run_task(client, task, agent_name, prepared=prepared))
+            result = await run_task(client, task, agent_name, prepared=prepared)
+            report.results.append(result)
+            announce(result)
         report.concurrency_ceiling = 1
     else:
         limiter = AdaptiveLimiter(parallel)
 
         async def guarded(task: Task) -> TaskResult:
             async with limiter.slot():
-                return await run_task(client, task, agent_name, limiter.shrink, prepared)
+                result = await run_task(client, task, agent_name, limiter.shrink, prepared)
+            # Fired in completion order, so a parallel run shows tasks landing
+            # as they finish rather than in the order they were requested.
+            announce(result)
+            return result
 
         report.results = list(await asyncio.gather(*(guarded(t) for t in attempts)))
         report.concurrency_ceiling = limiter.limit
