@@ -10,3 +10,9 @@ screenshot.png
 # agent-eval
 agent-eval/results/
 *.egg-info/
+
+# run outputs
+agent-eval/bench.json
+agent-eval/results-*.json
+agent-eval/*_results.json
+agent-eval/*_rate.json
