@@ -154,7 +154,15 @@ async def _run(args: argparse.Namespace) -> int:
         print("error: --parallel must be at least 1", file=sys.stderr)
         return 2
 
+    if args.repeat < 1:
+        print("error: --repeat must be at least 1", file=sys.stderr)
+        return 2
+    if not 0.0 <= args.min_pass_rate <= 1.0:
+        print("error: --min-pass-rate must be between 0.0 and 1.0", file=sys.stderr)
+        return 2
+
     concurrency = "one at a time" if args.parallel == 1 else f"{args.parallel} at a time"
+    repeats = "" if args.repeat == 1 else f", {args.repeat} attempts each"
     environment = load_environment(tasks_dir)
 
     async with make_client() as client:
