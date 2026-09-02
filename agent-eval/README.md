@@ -87,20 +87,22 @@ Asking for too much costs time, not results.
 ## How it works
 
 ```mermaid
-flowchart LR
-    CLI["agent-eval"] --> R["runner"]
-    R -->|one per task| S["fresh sandbox"]
+%%{init: {"flowchart": {"nodeSpacing": 45, "rankSpacing": 55}, "themeVariables": {"fontSize": "16px"}}}%%
+flowchart TD
+    CLI["agent-eval"] --> RUN["runner<br/>one sandbox per attempt"]
 
-    subgraph SB["Solari sandbox"]
+    subgraph BOX["fresh Solari sandbox"]
         direction TB
-        SET["setup(sb)"] --> LOOP["agent loop"] --> CHK["check(Checker)"]
+        SET["setup(sb)<br/>writes the fixture"]
+        LOOP["agent loop<br/>observe, act, result"]
+        CHK["check(Checker)<br/>exit codes and stdout"]
+        SET --> LOOP --> CHK
     end
 
-    S --> SB
-    CHK --> REP["report: JSON + markdown + exit code"]
-
-    A["your agent"] -.->|"prompt only"| LOOP
-    LOOP -.->|"exit codes, stdout, files"| A
+    RUN --> SET
+    AGENT["your agent"] -.->|"prompt only"| LOOP
+    LOOP -.->|"exit codes, stdout"| AGENT
+    CHK --> REP["report<br/>JSON, markdown, exit code"]
 ```
 
 The dotted line matters: your agent gets the prompt and the results of its own
