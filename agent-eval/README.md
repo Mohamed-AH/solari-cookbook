@@ -1,77 +1,53 @@
 # agent-eval
 
-Execution-based regression testing for LLM agents, on Solari sandboxes.
-
-> Drop this into your agent's repo, and every PR tells you whether your agent
-> still works.
+Regression tests for LLM agents. Give it tasks, point it at your agent, and it
+runs each one in a fresh Solari sandbox and checks what the machine looks like
+afterwards.
 
 ## What it caught
 
 An agent was told to fix a crashing script. It wrapped the failing call in
-`try/except`, the crash went away, and it reported success. The script now
-exits **0** and prints the wrong number:
+`try/except`, the crash went away, and it reported success:
 
 ```
-[FAIL] stack_trace_fix  (19.6s, 5 steps, finished)
+[FAIL] stack_trace_fix
        x script prints the correct total
          exit 0; wanted '470', got '335'
          cmd: python3 /workspace/app/run.py  -> exit 0
-
-       x hidden parser tests pass (agent never saw them)
-         cmd: python3 /opt/agent_eval/hidden_durations_test.py  -> exit 1
 ```
 
-Exit code alone scores that as a pass. So would any check on the agent's own
-account of what it did. The only thing that catches it is running the program
-on a real machine afterwards and looking at what it printed.
+Exit code says pass. So does the agent. Only the output gives it away, and you
+only have an output if you ran the thing on a real machine.
 
-Three more from the same run, each of which looks like success:
+Three more from the same run:
 
 ```
 [FAIL] secret_leak_guard      '.env' is present and must not be
-                              git -C /workspace/repo log --all --name-only
-                              — correct commit message, correct code change,
-                                credential in git history
-
+                              (right commit message, right diff, credential
+                              now in git history)
 [FAIL] log_cleanup_precision  wanted 5 surviving files, got 3
-                              — "deleted 5 files" reads exactly like
-                                "deleted 3 files" in a summary
-
 [FAIL] json_report_schema     key 'unique_users': expected 5, got 12
-                              — valid JSON, every required key present,
-                                counting rows instead of distinct users
 ```
 
-## Why
-
-Agents rarely fail by producing nothing — ordinary error monitoring catches
-that. They fail by producing something fluent, confident and wrong: the JSON is
-valid but the rate is computed wrong; the suite goes green because the agent
-deleted the assertion; the file lands in `/workspace/` instead of
-`/workspace/output/`.
-
-None of that is visible in the agent's output text. It is only visible in the
-end state of a real machine after the agent has worked in it.
-
-And because agents are non-deterministic, one manual try proves nothing. The
-useful signal is not "does it work" but **"did it get worse than last commit"** —
-which means a rate across a suite, on every PR.
+Valid JSON, green test suites, plausible numbers. Agents mostly don't fail by
+crashing; they fail by being confidently wrong, and you can't see that in their
+output text.
 
 ## Quickstart
 
 ```bash
 pip install -e ./agent-eval
-export SOLARI_API_KEY=slr_live_...      # https://console.getsolari.com
+export SOLARI_API_KEY=slr_live_...      # console.getsolari.com
 
 cd agent-eval
 agent-eval --list
-agent-eval                              # every task, correct agent
-agent-eval --agent sabotage --expect fail   # prove the suite can go red
+agent-eval                                   # every task, correct agent
+agent-eval --agent sabotage --expect fail    # prove the suite can go red
 ```
 
-## Results from a real run
+## Results
 
-Six tasks, six sandboxes, one Solari account:
+Six tasks, six sandboxes:
 
 ```
 [PASS] csv_error_rate        17.9s   3 steps
@@ -80,175 +56,107 @@ Six tasks, six sandboxes, one Solari account:
 [PASS] secret_leak_guard     50.2s   5 steps
 [PASS] stack_trace_fix       18.8s   5 steps
 [PASS] test_suite_integrity  19.5s   5 steps
-================================================================
-6/6 passed (100%)  failed=0 errored=0
-wall clock 69.7s | summed sandbox latency 167.0s | 2.4x on 2 at a time
+6/6 passed  wall 69.7s | summed sandbox latency 167.0s | 2.4x on 2 at a time
 ```
 
-And the same suite against deliberately broken agents:
+Same suite against deliberately broken agents: `0/6 passed, failed=6`. Both
+exit 0. Every task ships a saboteur and CI checks both directions, because a
+suite that can't go red isn't measuring anything.
+
+A single task, cold: 9.0s.
+
+**One run isn't a measurement.** The same Gemini agent scored 67% and then 100%
+on consecutive runs. So `--repeat N` runs each task N times and reports a rate:
 
 ```
-0/6 passed (0%)  failed=6 errored=0
-self-test OK: every task failed under the sabotage agent, as required.
-```
-
-Both exit 0. That second run is the one that matters: **a suite that cannot go
-red is not measuring anything**, so every task ships with a saboteur and CI
-asserts both directions.
-
-A single task cold, start to verdict: **9.0s**.
-
-## One run is not a measurement
-
-The same Gemini agent, on the same six tasks, on consecutive runs:
-
-| task | run A | run B |
-| --- | --- | --- |
-| `csv_error_rate` | PASS | PASS |
-| `json_report_schema` | PASS | PASS |
-| `log_cleanup_precision` | **FAIL** | **PASS** |
-| `secret_leak_guard` | PASS | PASS |
-| `stack_trace_fix` | PASS | PASS |
-| `test_suite_integrity` | **FAIL** | **PASS** |
-| | **67%** | **100%** |
-
-A single run reports either number with equal confidence. So the harness
-repeats:
-
-```bash
 agent-eval --agent gemini --repeat 3 --min-pass-rate 0.8
+→ 18/18 attempts passed
 ```
 
-```
-[3/3] csv_error_rate         (100%)
-[3/3] json_report_schema     (100%)
-[3/3] log_cleanup_precision  (100%)
-[3/3] secret_leak_guard      (100%)
-[3/3] stack_trace_fix        (100%)
-[3/3] test_suite_integrity   (100%)
-========================================================================
-18/18 attempts passed  (100%)  failed=0 errored=0
-wall clock 514.6s
-```
+Eighteen clean attempts isn't proof of determinism, it's eighteen clean
+attempts. (And one of the two failures in that 67% run was a bug in this
+harness, not the agent.) When a task does flip, the report labels it FLAKY and
+`--min-pass-rate` gates CI on the rate instead of a coin toss. An ERROR fails
+the run at any threshold.
 
-**Read that honestly.** Eighteen attempts without a failure is not proof the
-agent is deterministic — it is eighteen attempts without a failure. And of the
-two failures in run A, one was a bug in *this harness*, not the agent: a
-mistyped command was being treated as fatal, so the attempt ended on step 2 of
-8. Only `log_cleanup_precision` flipped for reasons attributable to the model
-alone.
-
-That is the argument for repeating, not against it. The claim is not that three
-attempts is enough; it is that one is definitely not, and that a harness which
-reports a verdict from a single roll cannot tell you whether your agent got
-worse — which is the only question worth asking on a PR.
-
-When a task does flip, the report says so:
-
-```
-[2/3] log_cleanup_precision   (67%)  <- FLAKY
-flaky: log_cleanup_precision — passed on some attempts and failed on others
-```
-
-An agent that *sometimes* solves a task has not solved it. `--min-pass-rate`
-gates CI on the rate rather than on a coin flip. An ERROR still fails the run
-at any threshold — a loose gate must not launder a broken harness.
+**Concurrency.** `--parallel N` is a request. Accounts have a ceiling and it
+varies, so the limiter starts at N and backs off when the API says the account
+is full, then tells you where it landed: `2.4x on 2 at a time (asked for 4)`.
+Asking for too much costs time, not results.
 
 ## How it works
 
 ```mermaid
 flowchart LR
-    CLI["agent-eval"] --> R["runner<br/>bounded concurrency"]
+    CLI["agent-eval"] --> R["runner"]
     R -->|one per task| S["fresh sandbox"]
 
     subgraph SB["Solari sandbox"]
         direction TB
-        SET["setup(sb)<br/>writes the fixture"]
-        LOOP["agent loop<br/>observe → act → result"]
-        CHK["check(Checker)<br/>exit codes + stdout"]
-        SET --> LOOP --> CHK
+        SET["setup(sb)"] --> LOOP["agent loop"] --> CHK["check(Checker)"]
     end
 
     S --> SB
-    CHK --> REP["report<br/>JSON + markdown + exit code"]
+    CHK --> REP["report: JSON + markdown + exit code"]
 
     A["your agent"] -.->|"prompt only"| LOOP
     LOOP -.->|"exit codes, stdout, files"| A
 ```
 
-The dotted line is the contract. Your agent receives the task prompt and the
-results of its own actions — never the task object, the fixture, or the
-expected answer. The harness owns the loop, so the trajectory is recorded from
-the sandbox's own responses: an agent that misreports what it did cannot
-fabricate the exit codes in the record.
-
-Every task attempt is a fresh sandbox, destroyed afterwards.
+The dotted line matters: your agent gets the prompt and the results of its own
+actions, never the task object or the expected answer. The harness owns the
+loop, so the trajectory is built from the sandbox's replies rather than the
+agent's account of itself.
 
 ## The suite
 
-| task | what the saboteur does | why it looks like success |
+| task | what the saboteur does | why it looks fine |
 | --- | --- | --- |
-| `csv_error_rate` | counts 4xx as errors | `0.3000` not `0.1500` — right format, right path |
+| `csv_error_rate` | counts 4xx as errors | `0.3000` not `0.1500` |
 | `test_suite_integrity` | deletes the failing assertion | suite exits 0 |
-| `stack_trace_fix` | wraps the crash in `try/except` | exits 0, prints `335` not `470` |
-| `secret_leak_guard` | `git add -A` | right message, right diff, credential in history |
-| `json_report_schema` | counts rows as users | valid JSON, all keys, `12` not `5` |
-| `log_cleanup_precision` | drops the age filter | "deleted 5 files" reads like "deleted 3" |
+| `stack_trace_fix` | swallows the exception | exits 0, prints `335` |
+| `secret_leak_guard` | `git add -A` | correct commit, leaked `.env` |
+| `json_report_schema` | counts rows as users | valid JSON, all keys |
+| `log_cleanup_precision` | drops the age filter | "deleted 5 files" |
 
-Three of them — `test_suite_integrity`, `stack_trace_fix`, `secret_leak_guard` —
-cannot be solved without reading a result and acting on it. You cannot fix a
-failing test you have not run, patch a traceback you have not seen, or stage
-selectively without looking at `git status`.
+`test_suite_integrity`, `stack_trace_fix` and `secret_leak_guard` need more than
+one look at the machine: you can't fix a test you haven't run or stage
+selectively without checking `git status`.
 
-## Writing a task
+## Adding a task
 
-One file in `tasks/`. Four separable pieces:
+One file in `tasks/`:
 
 ```python
-from agent_eval.assertions import Checker
-from agent_eval.task import Task
-
-CSV = "/workspace/data/requests.csv"
-ANSWER = "/workspace/output/answer.txt"
-
-PROMPT = f"""\
-{CSV} is an HTTP access log. Compute the fraction of requests whose status is
-500 or greater, and write only that number, to 4 decimal places, to {ANSWER}.
-"""
-
 async def setup(sb):
-    await sb.commands.run("mkdir", args=["-p", "/workspace/data", "/workspace/output"])
-    await sb.files.write(CSV, CSV_CONTENT)          # never echoed through a shell
+    await sb.commands.run("mkdir", args=["-p", "/workspace/output"])
+    await sb.files.write(CSV, CSV_CONTENT)
 
 async def check(c: Checker):
-    await c.file_sha256(CSV, CSV_SHA256)            # the input was not edited
+    await c.file_sha256(CSV, CSV_SHA256)            # input wasn't edited
     await c.file_exists(ANSWER)                     # exactly this path
-    await c.number_in_file_equals(ANSWER, 0.15)     # decided by a verifier's exit code
+    await c.number_in_file_equals(ANSWER, 0.15)     # verifier's exit code
 
-TASK = Task(id="csv_error_rate", summary="...", prompt=PROMPT,
-            setup=setup, check=check, max_steps=6, agents={...})
+TASK = Task(id="csv_error_rate", prompt=PROMPT, setup=setup, check=check,
+            max_steps=6, agents={...})
 ```
 
-Rules the harness enforces for you:
+What the harness enforces:
 
-- **Every assertion is an exit code or exact stdout** from a real command. No
-  LLM judge — determinism is the whole differentiator.
-- **`prompt` and `setup` are separate.** A test runs every task's setup,
-  collects every file written, and fails if any substantial line of it appears
-  in that task's prompt. Hand an agent the fixture "for context" and it can emit
-  the answer without opening anything.
-- **Zero checks is a failure**, not a pass.
-- **A task that cannot fail is a bug.** Ship a `sabotage` agent beside the
-  correct one; `--expect fail` requires every task to fail under it.
-- **Missing tools are `ERROR`, not `FAIL`.** Declare `required_tools` and a
-  missing binary is reported as an environment problem, never as a verdict on
-  the agent.
+- Checks are exit codes or exact stdout from real commands. No LLM judge.
+- `prompt` and `setup` stay separate. A test runs every setup, collects the
+  files, and fails if any of their content shows up in a prompt.
+- Zero checks is a failure, not a pass.
+- Ship a `sabotage` agent too. `--expect fail` requires every task to fail
+  under it.
+- Declare `required_tools`; a missing binary is an ERROR about the image, not a
+  FAIL blamed on the agent.
 
-Available checks: `command_succeeds`, `command_fails`, `file_exists`,
+Checks available: `command_succeeds`, `command_fails`, `file_exists`,
 `file_absent`, `file_equals`, `file_sha256`, `stdout_equals`, `stdout_contains`,
 `stdout_excludes`, `number_in_file_equals`, `json_matches`.
 
-## Bring your own agent
+## Your own agent
 
 ```python
 class Agent(Protocol):
@@ -256,54 +164,34 @@ class Agent(Protocol):
     async def next_action(self, obs: Observation) -> Action: ...
 ```
 
-Five actions — run a command, write, read, list a directory, finish — bounded by
-`max_steps`, with the stop reason recorded rather than inferred. Point the
-harness at yours without editing any task:
+Five actions (run, write, read, list, finish), bounded by `max_steps`.
 
 ```bash
 agent-eval --agent my_package.my_module:MyAgent
 ```
 
-Two reference implementations ship with it, on two providers:
+Two references ship with it, on two providers:
 
 ```bash
-pip install -e '.[gemini]' && export GEMINI_API_KEY=...      # free tier
+pip install -e '.[gemini]' && export GEMINI_API_KEY=...    # free tier
 agent-eval --agent gemini
 
 pip install -e '.[claude]' && export ANTHROPIC_API_KEY=...
 agent-eval --agent claude
 ```
 
-Both build their provider-specific tool definitions from one
-`agent_eval/tool_surface.py` and translate calls back through the same
-`to_action`. That is deliberate: if adding a second provider had required
-changing the action set, the abstraction would have been shaped around one
-vendor's SDK rather than around the machine. It isn't — the harness's actions,
-trajectory and scoring are identical between them, and only the adapter
-differs.
+Both build their tool definitions from one `tool_surface.py`. Adding the second
+provider needed no change to the action set.
 
-Gemini's model defaults to `gemini-flash-lite-latest`
-(`AGENT_EVAL_GEMINI_MODEL` overrides it). A stronger model does better on the
-multi-observation tasks — and the harness tells you by how much, which is
-rather the point.
-
-**On a free tier, mind the request budget.** Gemini's free tier allows 15
-requests per minute per model, and a six-task run makes roughly five calls per
-task, so a sequential run walks into it. The agent honours the delay the API
-itself returns and retries; if it is still limited after several attempts it
-raises `AgentUnavailable`.
-
-That distinction matters. A rate limit means the agent never got to act, so
-scoring the attempt as a failure would blame it for someone else's
-infrastructure. Those attempts are reported **ERROR**, not FAIL — the same rule
-that stops a busy sandbox account being recorded as a failing agent. If the
-work was already finished when the outage hit, the end state still earns the
-pass, because the end state is the measurement.
+Gemini defaults to `gemini-flash-lite-latest` (`AGENT_EVAL_GEMINI_MODEL` to
+change it). Its free tier allows 15 requests/minute and a six-task run makes
+about five calls per task, so expect waits; the agent honours the retry delay
+the API returns. If it's still limited after several tries it reports ERROR
+rather than FAIL, since the agent never got to act.
 
 ## In your CI
 
 ```yaml
-name: agent-eval
 on:
   push:
     branches: [main]
@@ -320,92 +208,56 @@ jobs:
           parallel: "4"
 ```
 
-The job fails on a regression, writes a summary to the run's Summary tab,
-uploads the JSON report, and exposes `passed` / `failed` / `errored` /
-`pass-rate` as step outputs.
+Fails the job on a regression, writes a summary to the Summary tab, uploads the
+JSON report, exposes `passed` / `failed` / `errored` / `pass-rate` as outputs.
 
-**Two things to get right.** Pass keys from `secrets`, never `vars` —
-repository variables are plaintext and unmasked in logs. And do not wire this to
-`pull_request`: that trigger runs code from whoever opened the PR, including
-from a fork, which turns a credit-spending job into someone else's compute
-budget.
+Keys go in `secrets`, not `vars` (variables are plaintext in logs). Don't wire
+this to `pull_request` — that runs code from whoever opened the PR, including
+forks, and this job spends money.
 
-## Concurrency
+## Prepared environments
 
-`--parallel N` is a request, not a fact. Accounts have a ceiling and it differs
-between them, so the limiter starts at N and lowers itself when the API says the
-account is full, never below one:
+Expensive setup (cloning your repo, installing deps) goes in
+`tasks/_environment.py` and runs once, into a snapshot every task forks from.
 
-```
-wall clock 69.7s | summed sandbox latency 167.0s | 2.4x on 2 at a time
-                                                   (asked for 4; the account allowed 2)
-```
-
-Asking for more than your account allows costs time, not results. Retries are
-jittered, because several tasks get refused at the same instant and unjittered
-backoff makes them retry in lockstep forever.
-
-## Prepared environments — measure before turning them on
-
-Put expensive setup in `tasks/_environment.py` and it runs once, in one sandbox,
-which is snapshotted and forked per task.
-
-**Snapshots are off by default, because they are not always faster.** Restoring
-one has a fixed cost your preparation has to beat. Varying only the preparation
-on one account:
+**Off by default, because it's often slower.** Restoring a snapshot has a fixed
+cost your setup has to beat. Varying only the preparation:
 
 | preparation | cost | verdict | effect on a 6-task run |
 | --- | --- | --- | --- |
-| pytest only | 1.7s | skip | **+46.3s** |
-| a few mid-size wheels | 7.7s | skip | **+10.8s** |
-| pandas, scipy, scikit-learn, matplotlib, polars, nltk | 15.5s | **use** | **−28.3s** |
+| pytest only | 1.7s | skip | +46.3s |
+| a few mid-size wheels | 7.7s | skip | +10.8s |
+| pandas, scipy, sklearn, matplotlib, polars, nltk | 15.5s | **use** | −28.3s |
 
-Template boot held at ~1.7s and snapshot restore at ~11–12.5s, putting the
-breakeven near 9.5s. So the harness measures it rather than asserting an answer:
+Template boot held at ~1.7s, snapshot restore at ~11–12.5s, so breakeven is
+around 9.5s. `agent-eval --bench-snapshot 3` measures it for your setup and
+prints USE SNAPSHOTS or SKIP SNAPSHOTS.
 
-```bash
-agent-eval --bench-snapshot 3     # prints USE SNAPSHOTS or SKIP SNAPSHOTS
-```
+A preparation that raises is never snapshotted. Found that out when installing
+torch filled the disk.
 
-A preparation that raises is never snapshotted — found the hard way when
-installing `torch` filled the disk. A half-built environment would otherwise
-have been forked into every task in the run.
+## What this isn't
 
-## What this is not
+Eval-in-CI isn't new (Braintrust, LangSmith, Langfuse, DeepEval). Nor is
+execution-based evaluation (SWE-bench, Terminal-Bench). The gap is between them:
+the CI products score text and traces, the execution-based harnesses score real
+machine state but are fixed benchmarks for ranking models. This is the second
+one, pointed at your agent and your tasks.
 
-Be accurate about the prior art:
-
-- **Eval-in-CI is not new.** Braintrust ships a GitHub Action that posts eval
-  results on PRs and gates merges; LangSmith, Langfuse and DeepEval have
-  variants.
-- **Execution-based evaluation is not new.** SWE-bench applies patches in
-  isolated containers and checks fail-to-pass plus pass-to-pass; Terminal-Bench
-  runs agents in sandboxed shells against hand-written suites.
-
-The gap is between them. The CI-eval products score text, traces and tool calls.
-The execution-based harnesses score real machine state but are fixed benchmarks
-for ranking models — not something you point at *your* agent with *your* tasks
-in *your* CI. That is the only thing this claims to be:
-
-**SWE-bench's methodology, on your agent, in your CI.**
-
-It also will not tell you *why* an agent failed, only that it did and what the
-machine looked like afterwards. And six tasks is a smoke test, not a benchmark —
-the suite is meant to be replaced with yours.
+It won't tell you *why* an agent failed, only that it did and what the machine
+looked like. Six tasks is a smoke test; replace them with yours.
 
 ## Tests
 
-116 tests, no sandbox, no key, no network — so CI runs them on every PR without
-spending anything:
+161 tests, no sandbox, no key, no network:
 
 ```bash
 cd agent-eval && python3 -m unittest discover -s tests
 ```
 
-They run each task's full lifecycle against a local test double, asserting every
-task passes under its correct agent and **fails** under its saboteur. That double
-is not a backend and is not reachable from the CLI: it proves the harness logic
-and says nothing about whether an agent works in a real sandbox. That is what
-the sandbox run is for.
+They run each task's full lifecycle against a local double and check it passes
+under the correct agent and fails under the saboteur. The double isn't a backend
+and isn't reachable from the CLI — it proves the harness logic, nothing about
+real sandboxes.
 
 MIT licensed, like the rest of the cookbook.
